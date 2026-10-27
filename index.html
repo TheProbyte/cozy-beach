@@ -299,7 +299,7 @@ const gfxStore = {
   set(v) { try { localStorage.setItem('beachGfx', JSON.stringify(v)); } catch {} },
 };
 const savedGfx = gfxStore.get();
-let GFX_LEVEL = Math.min(IS_PHONE ? 1 : 2, Number.isInteger(savedGfx.level) ? savedGfx.level : 2);
+let GFX_LEVEL = Math.min(IS_PHONE || Q.has('wallpaper') ? 1 : 2, Number.isInteger(savedGfx.level) ? savedGfx.level : 2);
 if (Q.has('gfx')) GFX_LEVEL = clamp(Math.round(qnum('gfx', GFX_LEVEL)), 0, 2);   // test: force a quality level
 // Phone live wallpaper (?wallpaper): it runs all day behind the home screen, so it draws fewer pixels and frames.
 const WALLPAPER = Q.has('wallpaper');
@@ -2953,6 +2953,10 @@ function start() {
 }
 function stop() { running = false; cancelAnimationFrame(rafId); }
 document.addEventListener('visibilitychange', () => (document.hidden ? stop() : start()));
+// The Android app calls this when the wallpaper goes out of sight (an app opened, screen off) and comes back.
+window.__wallpaperVisible = (v) => (v && !document.hidden ? start() : stop());
+// Wallpaper: settings changed in the app's own screen apply here too.
+if (WALLPAPER) addEventListener('storage', (e) => { if (e.key === 'beachSettings') location.reload(); });
 // If the GPU drops the page's graphics: step down a quality level, remember it, and wait for the
 // browser to hand the graphics back, then carry on in place (three.js re-uploads everything itself).
 let contextLost = false, restoreTimer = 0;

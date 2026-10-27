@@ -1,0 +1,79 @@
+name: Build APK
+
+on:
+  push:
+    branches: ["**"]
+    paths-ignore: ["**.md"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v4
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      # The app bundles the same page GitHub Pages serves (index.html) plus three.js, so it runs offline.
+      - name: Bundle the page and three.js
+        run: |
+          mkdir -p app/src/main/assets
+          cp index.html app/src/main/assets/index.html
+          curl -fsSL --retry 3 -o app/src/main/assets/three.module.js \
+            https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js
+          head -c 200 app/src/main/assets/three.module.js; echo
+          ls -l app/src/main/assets
+
+      - name: Build debug APK
+        run: chmod +x gradlew && ./gradlew assembleDebug 2>&1 | tee -a build.log; exit ${PIPESTATUS[0]}
+
+      - name: Summarize errors
+        if: failure()
+        run: |
+          echo "==== ERRORS ===="
+          grep -E "^e: |error:|FAILED|What went wrong" -A2 build.log | head -150 || true
+
+      - name: Name the APK
+        run: cp app/build/outputs/apk/debug/app-debug.apk CozyBeach.apk
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: CozyBeach
+          path: CozyBeach.apk
+          if-no-files-found: error
+
+      # Rolling "latest" release so the APK is always two taps away on the phone:
+      # https://github.com/TheProbyte/cozy-beach/releases/download/latest/CozyBeach.apk
+      - name: Publish rolling "latest" release
+        if: github.ref_name == 'main' || github.ref_name == github.event.repository.default_branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          APK=CozyBeach.apk
+          NOTES="Built from ${GITHUB_SHA::7} ($(date -u +'%Y-%m-%d %H:%M UTC')). Download **CozyBeach.apk** below, open it on your phone, then tap **Set as wallpaper**."
+          if gh release view latest >/dev/null 2>&1; then
+            gh release upload latest "$APK" --clobber
+            gh release edit latest --title "Latest build" --notes "$NOTES" --latest
+          else
+            for attempt in 1 2 3; do
+              gh release create latest "$APK" --title "Latest build" --target "$GITHUB_SHA" --latest --notes "$NOTES" && break
+              echo "Release create failed (attempt $attempt), retrying..."; sleep $((attempt * 10))
+              [ "$attempt" = 3 ] && exit 1
+            done
+          fi
