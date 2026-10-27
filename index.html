@@ -41,6 +41,11 @@
   #panel :focus-visible, #gear:focus-visible { outline: 2px solid #e9b872; outline-offset: 2px; }
   #panel { user-select: none; -webkit-user-select: none; }
   #panel.dragging { cursor: grabbing; }
+  /* Holding a slider: hide the rest of the panel so the scene shows through */
+  #panel.peek { background: transparent; border-color: transparent; box-shadow: none; }
+  #panel.peek * { visibility: hidden; }
+  #panel.peek .row.active, #panel.peek .row.active * { visibility: visible; }
+  #panel.peek .row.active { background: rgba(17,22,36,.8); border-radius: 10px; padding: 4px 8px; margin: 0 -8px; }
   #panel .tabs, #panel .seg { display: flex; flex-wrap: wrap; gap: 5px; }
   #panel .tabs { margin: 12px 0 2px; }
   #panel .seg { grid-column: 1 / -1; margin-top: 3px; }
@@ -129,7 +134,18 @@ const VIGNETTE           = 0.8;         // darkened corners, 0 = off
 const CAMERA_ZOOM        = 0.7;         // above 1 zooms in, below 1 shows more
 const CAMERA_HEIGHT      = 2.45;        // camera height. Lower feels more heroic, higher looks down on them
 const CAMERA_DRIFT       = 0.5;         // gentle parallax: the camera shifts a little as the mouse moves across the screen. 0 = off
-const TALL_GROUP_POSITION = 0.6;        // phones and other tall screens: how far down the screen the group sits (0.45 = middle … 0.75 = low)
+
+// ---- Phone (tall screens only: the Android app and phones in portrait) -----------------
+// The camera fits itself around whichever characters are shown and keeps them centred.
+const TALL_GROUP_POSITION = 0.6;        // how far down the screen the group sits (0.45 = middle … 0.75 = low)
+const TALL_ZOOM          = 1.0;         // 1 = the characters just fit the width. Higher zooms in, lower shows more beach
+const TALL_PAN           = 0;           // slide the view left (−) or right (+), in metres
+const TALL_PALMS         = true;        // two palm trees framing the scene (you place them below)
+const TALL_PALM_LEFT_X   = -0.5;        // left palm: metres out from the left-most character (− = further out, + = in behind them)
+const TALL_PALM_LEFT_Z   = -1.6;        // left palm: depth (− = further back toward the sea, + = nearer the camera)
+const TALL_PALM_RIGHT_X  = 0.4;         // right palm: metres out from the right-most character (+ = further out)
+const TALL_PALM_RIGHT_Z  = -2.6;        // right palm: depth
+const TALL_PALM_SIZE     = 1.0;         // palm height, 1 = normal
 
 // ---- Effects (each one 0 = off) -----------------------------------------------------
 const COLOR_GRADE        = 'natural';   // colour-grade preset on top of the Look values: 'natural', 'film', 'golden', 'pastel', 'moody', 'vivid'
@@ -232,7 +248,8 @@ const qnum = (k, d) => (Q.has(k) && Q.get(k) !== '' && isFinite(+Q.get(k))) ? +Q
 const FILE_SETTINGS = {
   ACTIVITY_PRESET, MOVE_SPEED, ACTIVITY, IDLE_TIME, BLINK_RATE,
   MOUSE_FOLLOW, MOUSE_DEPTH, MOUSE_IDLE_SECONDS, WAKE_ON_HOVER,
-  DEPTH_BLUR, BLUR_START, BLUR_FULL, SKY_BLUR, WATER_BLUR, SATURATION, CONTRAST, WARMTH, VIGNETTE, CAMERA_ZOOM, CAMERA_HEIGHT, CAMERA_DRIFT, TALL_GROUP_POSITION,
+  DEPTH_BLUR, BLUR_START, BLUR_FULL, SKY_BLUR, WATER_BLUR, SATURATION, CONTRAST, WARMTH, VIGNETTE, CAMERA_ZOOM, CAMERA_HEIGHT, CAMERA_DRIFT,
+  TALL_GROUP_POSITION, TALL_ZOOM, TALL_PAN, TALL_PALMS, TALL_PALM_LEFT_X, TALL_PALM_LEFT_Z, TALL_PALM_RIGHT_X, TALL_PALM_RIGHT_Z, TALL_PALM_SIZE,
   COLOR_GRADE, BLOOM, SUN_RAYS, CONTACT_SHADING, REFLECTIONS, FIRELIGHT_ON_FACES, WATER_SHINE,
   OCEAN_SPEED, CLOUD_SPEED, CLOUD_AMOUNT, FIRE_BRIGHTNESS, SHOW_GULLS, SHOW_SHOOTING_STARS, SHOW_ZZZ, CHARACTER_COUNT, CHARACTER_FLAT_SHADING,
   WIND, SHOW_FIREFLIES, GLOWING_WAVES, SHOW_MARSHMALLOWS, CLICK_TO_INTERACT, NOW_PLAYING_SIGN, DANCE_TO_MUSIC,
@@ -993,8 +1010,8 @@ function makePalm({ x, z, h: height, lean, rot: rotY }) {
   g.position.set(x, sandHeight(x, z) - 0.05, z);
   g.rotation.y = rotY;
   scene.add(g);
-  makeBlob(x, z, 1.9, 1.9, 0.5);
-  palms.push({ g, crown, ph: srand() * 6 });
+  const blob = makeBlob(x, z, 1.9, 1.9, 0.5);
+  palms.push({ g, crown, blob, ph: srand() * 6, home: { x, y: g.position.y, z } });
 }
 PALM_SPOTS.forEach(makePalm);
 
@@ -1166,9 +1183,9 @@ function placeFlat(mesh, x, z, rotY, lift = 0.02) {
   mesh.position.set(x, maxH + lift, z); mesh.rotation.set(-Math.PI / 2, 0, rotY);
   scene.add(mesh);
 }
-let towelY = -9;
+let towelY = -9, towelMesh = null;
 {
-  const towel = new THREE.Mesh(new THREE.PlaneGeometry(1.7, 2.5), new THREE.MeshLambertMaterial({ map: towelTex }));
+  const towel = towelMesh = new THREE.Mesh(new THREE.PlaneGeometry(1.7, 2.5), new THREE.MeshLambertMaterial({ map: towelTex }));
   towel.receiveShadow = S.SHADOWS;
   placeFlat(towel, -4.75, 0.95, 0.35, 0.01);
   towelY = towel.position.y;
@@ -1523,6 +1540,7 @@ const _u = new THREE.Vector3(), _l = new THREE.Vector3(), _v = new THREE.Vector3
 // Build the chosen characters (+ rocks for the rock poses, always present as scenery)
 const characters = [];
 const keep = new Set(KEEP_ORDER.slice(0, CFG.count));
+const spareProps = [];   // seats and towels of characters who aren't shown (hidden on phones)
 CHAR_DEFS.forEach((def, idx) => {
   const gy = sandHeight(def.x, def.z);
   let seatY = 0;
@@ -1531,7 +1549,8 @@ CHAR_DEFS.forEach((def, idx) => {
     rock.position.set(def.x, gy - 0.05, def.z - 0.3);
     rock.rotation.y = def.pose === 'rockLegUp' ? 0.4 : -0.5;
     scene.add(rock);
-    makeBlob(def.x, def.z - 0.3, 2.7, 2.3, 0.6, rock.rotation.y);
+    const rb = makeBlob(def.x, def.z - 0.3, 2.7, 2.3, 0.6, rock.rotation.y);
+    if (!keep.has(idx)) spareProps.push(rock, rb);
     seatY = rock.userData.top - 0.05;
   }
   if (!keep.has(idx)) return;
@@ -1555,6 +1574,7 @@ CHAR_DEFS.forEach((def, idx) => {
   c.footBlobs = c.legs.map(() => { const b = makeBlob(def.x, def.z, 0.4, 0.4, 0.55); b.userData.dyn = true; return b; });
   characters.push(c);
 });
+if (!keep.has(0) && towelMesh) spareProps.push(towelMesh);
 const sitters = characters.filter((c) => c.def.pose !== 'standing');
 const waver = characters.find((c) => c.def.pose === 'standing');
 
@@ -2862,10 +2882,10 @@ function resize() {
   renderer.setPixelRatio(pr);
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
-  for (const pm of palms) pm.g.visible = camera.aspect >= 1;   // on tall screens the palms sit just off the edge: hide the stray leaf
+  layoutTallScene();
   if (camera.aspect < 1) {
-    // Tall screens (phones): fit the group across the width from further back, instead of a very wide angle.
-    const tanH = TALL.halfWidth / (TALL.z - 0.6) / clamp(S.CAMERA_ZOOM / 0.7, 0.4, 3);
+    // Tall screens (phones): fit the shown characters across the width from further back, instead of a very wide angle.
+    const tanH = TALL.halfWidth / (TALL.z - 0.6) / clamp(S.TALL_ZOOM, 0.4, 3);
     camera.fov = 2 * Math.atan(tanH / camera.aspect) / DEG;
   } else {
     const needV = 2 * Math.atan(Math.tan(MIN_HFOV * DEG / 2) / camera.aspect) / DEG;
@@ -2879,7 +2899,40 @@ function resize() {
 }
 // Camera position, plus a gentle drift toward the mouse (CAMERA_DRIFT) for a bit of parallax.
 const drift = { x: 0, y: 0 };
-const TALL = { halfWidth: 6.9, x: 0.4, z: 22, lift: 1.1, groupY: 1.3 };   // group spans about x -5.7 … 6.3
+const TALL = { halfWidth: 6.9, x: 0.4, z: 22, lift: 1.1, groupY: 1.3 };
+// How far each character (with seat and arms) reaches left and right of its spot.
+const TALL_REACH = { Pip: [-1.0, 0.9], Mo: [-1.0, 0.9], Bo: [-0.8, 0.9], Gil: [-0.9, 1.6] };
+function fitTall() {
+  let lo = Infinity, hi = -Infinity;
+  for (const c of characters) { const r = TALL_REACH[c.def.name] || [-1, 1]; lo = Math.min(lo, c.def.x + r[0]); hi = Math.max(hi, c.def.x + r[1]); }
+  lo = Math.min(lo, FIRE_POS.x - 0.8); hi = Math.max(hi, FIRE_POS.x + 0.8);   // the fire always stays in shot
+  TALL.lo = lo; TALL.hi = hi;
+  TALL.x = (lo + hi) / 2 + clamp(S.TALL_PAN, -8, 8);
+  TALL.halfWidth = (hi - lo) / 2 + 0.75;
+}
+// Phones get their own scenery: two palms placed by the TALL_PALM_* settings (the wide-screen ones sit
+// off the edges there), and no empty seats or towels for characters who aren't shown.
+function layoutTallScene() {
+  const tall = camera.aspect < 1 && CFG.focus < 0;
+  if (tall) fitTall();
+  const spots = [[TALL.lo + S.TALL_PALM_LEFT_X, S.TALL_PALM_LEFT_Z], null, [TALL.hi + S.TALL_PALM_RIGHT_X, S.TALL_PALM_RIGHT_Z]];
+  palms.forEach((pm, i) => {
+    const spot = tall ? spots[i] : null;
+    const show = !tall || (spot && S.TALL_PALMS);
+    pm.g.visible = pm.blob.visible = !!show;
+    if (spot) {
+      const [x, z] = [clamp(spot[0], -12, 12), clamp(spot[1], -4, 6)];
+      pm.g.position.set(x, sandHeight(x, z) - 0.05, z);
+      pm.g.scale.setScalar(clamp(S.TALL_PALM_SIZE, 0.5, 1.6));
+      placeBlob(pm.blob, x, z);
+    } else {
+      pm.g.position.set(pm.home.x, pm.home.y, pm.home.z);
+      pm.g.scale.setScalar(1);
+      placeBlob(pm.blob, pm.home.x, pm.home.z);
+    }
+  });
+  for (const o of spareProps) o.visible = !tall;
+}
 function aimCamera() {
   const k = CFG.focus >= 0 ? 0 : clamp(S.CAMERA_DRIFT, 0, 2);
   if (camera.aspect < 1 && CFG.focus < 0) {
@@ -2954,7 +3007,16 @@ function start() {
 function stop() { running = false; cancelAnimationFrame(rafId); }
 document.addEventListener('visibilitychange', () => (document.hidden ? stop() : start()));
 // The Android app calls this when the wallpaper goes out of sight (an app opened, screen off) and comes back.
-window.__wallpaperVisible = (v) => (v && !document.hidden ? start() : stop());
+let hiddenSince = 0;
+window.__wallpaperVisible = (v) => {
+  if (!v) { if (!hiddenSince) hiddenSince = performance.now(); stop(); return; }
+  if (document.hidden) return;
+  // Back on the home screen after a minute or more away: someone waves hello.
+  const away = hiddenSince ? performance.now() - hiddenSince : 0;
+  hiddenSince = 0;
+  start();
+  if (away > 60000 && waver && !waver.st.dozing && waver.st.waveStart < 0) { waver.st.waveStart = simTime + 0.6; waver.st.youUntil = simTime + 3.6; }
+};
 // Wallpaper: settings changed in the app's own screen apply here too.
 if (WALLPAPER) addEventListener('storage', (e) => { if (e.key === 'beachSettings') location.reload(); });
 // If the GPU drops the page's graphics: step down a quality level, remember it, and wait for the
@@ -3023,7 +3085,19 @@ const PANEL_GROUPS = [
     { k: 'VIGNETTE', label: 'Darkened corners', min: 0, max: 0.8, step: 0.05 },
     { k: 'CAMERA_ZOOM', label: 'Camera zoom', min: 0.7, max: 1.6, step: 0.05 },
     { k: 'CAMERA_HEIGHT', label: 'Camera height', min: 0.8, max: 4, step: 0.05 },
-    { k: 'TALL_GROUP_POSITION', label: 'Phones: how low the group sits', min: 0.4, max: 0.8, step: 0.01 },
+  ]],
+  ['Phone', [
+    { k: 'TALL_ZOOM', label: 'Zoom', min: 0.5, max: 2, step: 0.05 },
+    { k: 'TALL_PAN', label: 'Pan left ↔ right', min: -4, max: 4, step: 0.05 },
+    { k: 'TALL_GROUP_POSITION', label: 'How low the characters sit', min: 0.4, max: 0.8, step: 0.01 },
+    { k: 'CAMERA_HEIGHT', label: 'Camera height', min: 0.8, max: 4, step: 0.05 },
+    { k: 'TALL_PALMS', label: 'Palm trees' },
+    { k: 'TALL_PALM_LEFT_X', label: 'Left palm: out ↔ in', min: -4, max: 3, step: 0.05 },
+    { k: 'TALL_PALM_LEFT_Z', label: 'Left palm: depth (back ↔ front)', min: -4, max: 5, step: 0.05 },
+    { k: 'TALL_PALM_RIGHT_X', label: 'Right palm: in ↔ out', min: -3, max: 4, step: 0.05 },
+    { k: 'TALL_PALM_RIGHT_Z', label: 'Right palm: depth (back ↔ front)', min: -4, max: 5, step: 0.05 },
+    { k: 'TALL_PALM_SIZE', label: 'Palm size', min: 0.5, max: 1.5, step: 0.05 },
+    { k: 'CHARACTER_COUNT', label: 'Characters (reloads)', min: 1, max: 4, step: 1, reload: true },
   ]],
   ['Effects', [
     { k: 'COLOR_GRADE', label: 'Colour grade', options: [['natural', 'Natural'], ['film', 'Film'], ['golden', 'Golden'], ['pastel', 'Pastel'], ['moody', 'Moody'], ['vivid', 'Vivid']] },
@@ -3093,7 +3167,7 @@ function saveSettings() {
   try { localStorage.setItem('beachSettings', JSON.stringify(diff)); } catch {}
 }
 function liveApply(k) {
-  if (k === 'CAMERA_ZOOM' || k === 'CAMERA_HEIGHT' || k === 'CAMERA_DRIFT' || k === 'TALL_GROUP_POSITION') resize();
+  if (k === 'CAMERA_ZOOM' || k === 'CAMERA_HEIGHT' || k === 'CAMERA_DRIFT' || k.startsWith('TALL_')) resize();
   if (k === 'SHOW_FPS') statsEl.style.display = S.SHOW_FPS ? 'block' : 'none';
   if (k === 'CHARACTER_COLORS') characters.forEach(paintCharacter);
   if (k === 'WEATHER_MODE' || k === 'WEATHER_LAT' || k === 'WEATHER_LON') fetchWeather();
@@ -3171,6 +3245,16 @@ const hexToHsl = (hex) => { const c = new THREE.Color(hex), o = {}; c.getHSL(o, 
     if (taps.length >= 3) { taps = []; showGear(6000); }
   }, { passive: true });
   gear.addEventListener('click', () => { panel.hidden = !panel.hidden; if (!panel.hidden) build(); });
+  // While a slider is held, only that slider stays visible, so you can watch the change (handy on a phone).
+  let peekRow = null;
+  panel.addEventListener('pointerdown', (e) => {
+    const rg = e.target.closest && e.target.closest('input[type=range]');
+    const row = rg && rg.closest('.row');
+    if (!row) return;
+    peekRow = row; row.classList.add('active'); panel.classList.add('peek');
+  });
+  const endPeek = () => { if (!peekRow) return; peekRow.classList.remove('active'); panel.classList.remove('peek'); peekRow = null; };
+  addEventListener('pointerup', endPeek); addEventListener('pointercancel', endPeek);
   addEventListener('keydown', (e) => { if (e.key === 'Escape') panel.hidden = true; });
 
   const fmt = (it, v) => (it.step >= 1 ? String(Math.round(v)) : (+v).toFixed(it.step < 0.05 ? 2 : it.step < 0.1 ? 2 : 1));
