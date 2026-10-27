@@ -35,6 +35,8 @@ public class BeachWallpaperService extends WallpaperService {
         private Context windowContext;
         private WebView web;
         private long lastTouch;
+        private NowPlaying nowPlaying;
+        private Tilt tilt;
 
         @Override
         public void onCreate(SurfaceHolder holder) {
@@ -58,7 +60,9 @@ public class BeachWallpaperService extends WallpaperService {
                 display = dm.createVirtualDisplay("CozyBeach", width, height, dpi, holder.getSurface(), 0);
                 Context displayContext = createDisplayContext(display.getDisplay());
                 windowContext = displayContext.createWindowContext(WindowManager.LayoutParams.TYPE_PRIVATE_PRESENTATION, null);
-                web = BeachWeb.create(windowContext);
+                web = BeachWeb.create(windowContext, () -> BeachWeb.sendTrack(web, nowPlaying.current()));
+                nowPlaying = new NowPlaying(BeachWallpaperService.this, (json) -> BeachWeb.sendTrack(web, json));
+                tilt = new Tilt(BeachWallpaperService.this, (x, y) -> BeachWeb.sendTilt(web, x, y));
                 WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
                         WindowManager.LayoutParams.TYPE_PRIVATE_PRESENTATION,
@@ -67,7 +71,8 @@ public class BeachWallpaperService extends WallpaperService {
                                 | WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
                         PixelFormat.OPAQUE);
                 windowContext.getSystemService(WindowManager.class).addView(web, lp);
-                web.loadUrl(BeachWeb.PAGE + "?wallpaper");
+                web.loadUrl(BeachWeb.PAGE + "?wallpaper&app");
+                if (isVisible()) startExtras();
             } catch (RuntimeException e) {
                 Log.e(TAG, "Could not start the wallpaper", e);
                 cleanUp();
@@ -86,7 +91,7 @@ public class BeachWallpaperService extends WallpaperService {
             super.onVisibilityChanged(visible);
             if (web == null) return;
             // Out of sight (an app on top, screen off): stop drawing to save battery.
-            if (visible) web.onResume(); else web.onPause();
+            if (visible) { web.onResume(); startExtras(); } else { web.onPause(); stopExtras(); }
             web.evaluateJavascript("window.__wallpaperVisible && window.__wallpaperVisible(" + visible + ")", null);
         }
 
@@ -120,7 +125,19 @@ public class BeachWallpaperService extends WallpaperService {
             super.onDestroy();
         }
 
+        /** Song info and tilt only while the wallpaper can be seen (saves battery). */
+        private void startExtras() {
+            if (nowPlaying != null) nowPlaying.start();
+            if (tilt != null) tilt.start();
+        }
+
+        private void stopExtras() {
+            if (nowPlaying != null) nowPlaying.stop();
+            if (tilt != null) tilt.stop();
+        }
+
         private void cleanUp() {
+            stopExtras();
             if (web != null) {
                 try {
                     windowContext.getSystemService(WindowManager.class).removeViewImmediate(web);

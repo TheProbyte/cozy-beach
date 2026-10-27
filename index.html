@@ -146,6 +146,8 @@ const TALL_PALM_LEFT_Z   = -1.6;        // left palm: depth (− = further back 
 const TALL_PALM_RIGHT_X  = 0.4;         // right palm: metres out from the right-most character (+ = further out)
 const TALL_PALM_RIGHT_Z  = -2.6;        // right palm: depth
 const TALL_PALM_SIZE     = 1.0;         // palm height, 1 = normal
+const TILT_PARALLAX      = 0;           // Android app: tilting the phone shifts the camera a little for a 3D feel. 0 = off (the app turns it on)
+const NIGHT_SKY_DARK     = 0;           // darker night sky, 0–1. Saves a little battery on OLED phone screens (the app uses 0.6)
 
 // ---- Effects (each one 0 = off) -----------------------------------------------------
 const COLOR_GRADE        = 'natural';   // colour-grade preset on top of the Look values: 'natural', 'film', 'golden', 'pastel', 'moody', 'vivid'
@@ -250,6 +252,7 @@ const FILE_SETTINGS = {
   MOUSE_FOLLOW, MOUSE_DEPTH, MOUSE_IDLE_SECONDS, WAKE_ON_HOVER,
   DEPTH_BLUR, BLUR_START, BLUR_FULL, SKY_BLUR, WATER_BLUR, SATURATION, CONTRAST, WARMTH, VIGNETTE, CAMERA_ZOOM, CAMERA_HEIGHT, CAMERA_DRIFT,
   TALL_GROUP_POSITION, TALL_ZOOM, TALL_PAN, TALL_PALMS, TALL_PALM_LEFT_X, TALL_PALM_LEFT_Z, TALL_PALM_RIGHT_X, TALL_PALM_RIGHT_Z, TALL_PALM_SIZE,
+  TILT_PARALLAX, NIGHT_SKY_DARK,
   COLOR_GRADE, BLOOM, SUN_RAYS, CONTACT_SHADING, REFLECTIONS, FIRELIGHT_ON_FACES, WATER_SHINE,
   OCEAN_SPEED, CLOUD_SPEED, CLOUD_AMOUNT, FIRE_BRIGHTNESS, SHOW_GULLS, SHOW_SHOOTING_STARS, SHOW_ZZZ, CHARACTER_COUNT, CHARACTER_FLAT_SHADING,
   WIND, SHOW_FIREFLIES, GLOWING_WAVES, SHOW_MARSHMALLOWS, CLICK_TO_INTERACT, NOW_PLAYING_SIGN, DANCE_TO_MUSIC,
@@ -258,6 +261,9 @@ const FILE_SETTINGS = {
   CYCLE_MODE, FAST_CYCLE_MINUTES, FAST_START_HOUR, FIXED_HOUR, LATITUDE, SOLAR_NOON_HOUR, SUN_PATH_SQUEEZE,
   MAX_FPS, IDLE_FPS, RENDER_SCALE, ANTIALIAS, SHADOWS, SHADOW_MAP_SIZE, SHOW_FPS,
 };
+// Inside the Android app (?app) some defaults suit a phone better. Anything changed in ⚙ still wins.
+const IN_APP = Q.has('app');
+if (IN_APP) Object.assign(FILE_SETTINGS, { CYCLE_MODE: 'realtime', TILT_PARALLAX: 1, NIGHT_SKY_DARK: 0.6 });
 const sameSetting = (a, b) => a === b || JSON.stringify(a) === JSON.stringify(b);
 const panelSaved = (() => { try { return JSON.parse(localStorage.getItem('beachSettings') || '{}'); } catch { return {}; } })();
 const S = { ...FILE_SETTINGS, CHARACTER_COLORS: JSON.parse(JSON.stringify(CHARACTER_COLORS)) };
@@ -1859,7 +1865,8 @@ function signArms(c, t, dt) {
   const L = sign.lift, held = smooth(0.85, 1, L);
   const sway = held * (Math.sin(t * 1.1) * 0.03 + music.groove * 0.025 * Math.sin(music.phase * Math.PI));
   const bob = held * (c.st.nod || 0) * 0.3;
-  sign.grp.scale.setScalar(Math.max(0.001, sign.size));
+  const size = sign.size * (camera.aspect < 1 ? 1.25 : 1);   // a bigger sign on phones, so the small lines stay readable
+  sign.grp.scale.setScalar(Math.max(0.001, size));
   // path: starts in front of the belly, stays well out in front while it passes his face (clear of the snout),
   // and only tucks back in once it is above his head
   sign.grp.position.set(sway, lerp(0.72, 2.2, L) + bob, lerp(0.8, 0.1, smooth(0.62, 1, L)) + 0.08 * Math.sin(Math.PI * L));
@@ -1869,7 +1876,7 @@ function signArms(c, t, dt) {
   c.body.position.y -= 0.05 * Math.sin(Math.PI * clamp((p - 0.2) / 0.32, 0, 1));
   for (let i = 0; i < 2; i++) {
     const s = i ? 1 : -1;
-    _sc.set(s * (sign.W / 2 - 0.12) * sign.size, (-sign.H / 2 + 0.02) * sign.size, 0.03).applyMatrix4(sign.grp.matrix);
+    _sc.set(s * (sign.W / 2 - 0.12), -sign.H / 2 + 0.02, 0.03).applyMatrix4(sign.grp.matrix);   // the matrix already holds the scale
     holdArm(c, i, _sc, _hPole.set(s, -0.4, 0.2), sign.grab);
   }
   // he watches the sign go up (and come down), then looks around normally while holding it
@@ -2109,6 +2116,10 @@ function updateEnvironment(t, dt) {
   // heat: a bright, washed-out haze near the horizon
   skyUniforms.uHorizon.value.lerp(_c1.set('#fff1d6'), wx.heat * 0.35 * env.day);
   updateLightning(t, dt);
+  if (S.NIGHT_SKY_DARK > 0) {   // darker night sky (OLED phones): deepen the zenith most, the horizon a little
+    const dk = clamp(S.NIGHT_SKY_DARK, 0, 1) * env.night;
+    skyUniforms.uZenith.value.multiplyScalar(1 - 0.8 * dk); skyUniforms.uHorizon.value.multiplyScalar(1 - 0.4 * dk);
+  }
   if (lightning.flash > 0) { skyUniforms.uZenith.value.lerp(_c1.set('#aab4ff'), lightning.flash * 0.5); skyUniforms.uHorizon.value.lerp(_c1.set('#d8dcff'), lightning.flash * 0.6); }
   scene.fog.color.copy(skyUniforms.uHorizon.value).lerp(skyUniforms.uZenith.value, 0.15);
   scene.fog.near = lerp(45, 7, wx.fog) * (1 - 0.3 * wx.rain);
@@ -2899,6 +2910,9 @@ function resize() {
 }
 // Camera position, plus a gentle drift toward the mouse (CAMERA_DRIFT) for a bit of parallax.
 const drift = { x: 0, y: 0 };
+// Phone tilt from the Android app (−1…1 each way, relative to how you usually hold it).
+const tilt = { x: 0, y: 0, tx: 0, ty: 0 };
+window.__tilt = (x, y) => { tilt.tx = clamp(+x || 0, -1, 1); tilt.ty = clamp(+y || 0, -1, 1); };
 const TALL = { halfWidth: 6.9, x: 0.4, z: 22, lift: 1.1, groupY: 1.3 };
 // How far each character (with seat and arms) reaches left and right of its spot.
 const TALL_REACH = { Pip: [-1.0, 0.9], Mo: [-1.0, 0.9], Bo: [-0.8, 0.9], Gil: [-0.9, 1.6] };
@@ -2937,8 +2951,9 @@ function aimCamera() {
   const k = CFG.focus >= 0 ? 0 : clamp(S.CAMERA_DRIFT, 0, 2);
   if (camera.aspect < 1 && CFG.focus < 0) {
     // Tilt so the group sits TALL_GROUP_POSITION of the way down the screen: sky above, sand below.
-    const y = S.CAMERA_HEIGHT + TALL.lift + drift.y * 0.18 * k, z = TALL.z;
-    camera.position.set(TALL.x + drift.x * 0.6 * k, y, z);
+    const tk = clamp(S.TILT_PARALLAX, 0, 2);
+    const y = S.CAMERA_HEIGHT + TALL.lift + drift.y * 0.18 * k + tilt.y * 0.45 * tk, z = TALL.z;
+    camera.position.set(TALL.x + drift.x * 0.6 * k + tilt.x * 1.1 * tk, y, z);
     const below = Math.atan2(y - TALL.groupY, z - 0.6);
     const ndc = 1 - 2 * clamp(S.TALL_GROUP_POSITION, 0.3, 0.85);
     const pitch = below + Math.atan(ndc * Math.tan(camera.fov * DEG / 2));
@@ -2985,7 +3000,8 @@ function frame(now) {
   simTime += dt;
   const moving = performance.now() - lastInput < 6000;
   drift.x = damp(drift.x, moving ? ptr.x : 0, moving ? 1.2 : 0.3, dt); drift.y = damp(drift.y, moving ? ptr.y : 0, moving ? 1.2 : 0.3, dt);
-  if (S.CAMERA_DRIFT > 0 || Math.abs(drift.x) > 1e-4) aimCamera();
+  tilt.x = damp(tilt.x, tilt.tx, 4, dt); tilt.y = damp(tilt.y, tilt.ty, 4, dt);
+  if (S.CAMERA_DRIFT > 0 || Math.abs(drift.x) > 1e-4 || S.TILT_PARALLAX > 0) aimCamera();
   updateEnvironment(simTime, dt);
   updateCharacters(dt, simTime);
   post.render();
@@ -3098,6 +3114,8 @@ const PANEL_GROUPS = [
     { k: 'TALL_PALM_RIGHT_Z', label: 'Right palm: depth (back ↔ front)', min: -4, max: 5, step: 0.05 },
     { k: 'TALL_PALM_SIZE', label: 'Palm size', min: 0.5, max: 1.5, step: 0.05 },
     { k: 'CHARACTER_COUNT', label: 'Characters (reloads)', min: 1, max: 4, step: 1, reload: true },
+    { k: 'TILT_PARALLAX', label: 'Tilt the phone to look around (app)', min: 0, max: 2, step: 0.1 },
+    { k: 'NIGHT_SKY_DARK', label: 'Darker night sky (saves battery)', min: 0, max: 1, step: 0.05 },
   ]],
   ['Effects', [
     { k: 'COLOR_GRADE', label: 'Colour grade', options: [['natural', 'Natural'], ['film', 'Film'], ['golden', 'Golden'], ['pastel', 'Pastel'], ['moody', 'Moody'], ['vivid', 'Vivid']] },

@@ -29,7 +29,7 @@ final class BeachWeb {
     private BeachWeb() {}
 
     @SuppressLint("SetJavaScriptEnabled")
-    static WebView create(Context context) {
+    static WebView create(Context context, Runnable onLoaded) {
         final AssetManager assets = context.getApplicationContext().getAssets();
         WebView web = new WebView(context);
         WebSettings s = web.getSettings();
@@ -65,11 +65,29 @@ final class BeachWeb {
             }
 
             @Override
+            public void onPageFinished(WebView view, String url) {
+                if (onLoaded != null) onLoaded.run();
+            }
+
+            @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
                 return true;   // stay on the beach: no navigating away
             }
         });
         return web;
+    }
+
+    /** Tell the page what's playing (Lively's format), or that nothing is (null). */
+    static void sendTrack(WebView web, String json) {
+        if (web == null) return;
+        String arg = json == null ? "null" : org.json.JSONObject.quote(json);
+        web.evaluateJavascript("window.livelyCurrentTrack && window.livelyCurrentTrack(" + arg + ")", null);
+    }
+
+    /** Phone tilt for the camera parallax, −1…1 each way. */
+    static void sendTilt(WebView web, float x, float y) {
+        if (web == null) return;
+        web.evaluateJavascript(String.format(java.util.Locale.US, "window.__tilt && window.__tilt(%.3f,%.3f)", x, y), null);
     }
 
     private static String mimeFor(String path) {
