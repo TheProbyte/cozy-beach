@@ -159,7 +159,10 @@ const SUN_RAYS           = 0.5;         // light shafts from the sun (or moon) w
 const CONTACT_SHADING    = 0.6;         // soft darkening where things touch: feet on sand, arms against bodies, rocks
 const REFLECTIONS        = 0.6;         // the sky, islands, palms and sun reflected in the sea (and in wet sand when it rains)
 const FIRELIGHT_ON_FACES = 1.0;         // warm firelight glow on the characters' faces and bodies at night
-const WATER_SHINE        = 1.0;         // glittering path of sunlight or moonlight across the sea
+const WATER_SHINE        = 1.0;
+const FILTER             = 'none';      // a look over the whole picture: 'none', 'dither', 'pixel', 'handheld', 'crt', 'comic', 'paint', 'film'
+const FILTER_SIZE        = 3;           // size of the filter's pixels / dots / scanlines, in screen points
+const FILTER_STRENGTH    = 1.0;         // 0–1: blend between the normal picture and the filter         // glittering path of sunlight or moonlight across the sea
 
 // ---- Scene --------------------------------------------------------------------------
 const OCEAN_SPEED        = 0.35;        // wave and swash speed. 1 = the original faster ocean
@@ -273,7 +276,7 @@ const FILE_SETTINGS = {
   DEPTH_BLUR, BLUR_START, BLUR_FULL, SKY_BLUR, WATER_BLUR, SATURATION, CONTRAST, WARMTH, VIGNETTE, CAMERA_ZOOM, CAMERA_HEIGHT, CAMERA_DRIFT,
   TALL_GROUP_POSITION, TALL_ZOOM, TALL_PAN, TALL_PALMS, TALL_PALM_LEFT_X, TALL_PALM_LEFT_Z, TALL_PALM_RIGHT_X, TALL_PALM_RIGHT_Z, TALL_PALM_SIZE,
   TILT_PARALLAX, NIGHT_SKY_DARK, PHONE_FPS, PHONE_RESOLUTION, PHONE_BATTERY_SAVER,
-  COLOR_GRADE, BLOOM, SUN_RAYS, CONTACT_SHADING, REFLECTIONS, FIRELIGHT_ON_FACES, WATER_SHINE,
+  COLOR_GRADE, BLOOM, SUN_RAYS, CONTACT_SHADING, REFLECTIONS, FIRELIGHT_ON_FACES, WATER_SHINE, FILTER, FILTER_SIZE, FILTER_STRENGTH,
   OCEAN_SPEED, CLOUD_SPEED, CLOUD_AMOUNT, FIRE_BRIGHTNESS, SHOW_GULLS, SHOW_SHOOTING_STARS, SHOW_ZZZ, CHARACTER_COUNT, CHARACTER_FLAT_SHADING,
   WIND, SHOW_FIREFLIES, GLOWING_WAVES, SHOW_MARSHMALLOWS, CLICK_TO_INTERACT, NOW_PLAYING_SIGN, DANCE_TO_MUSIC,
   CHARACTER_COLORS,
@@ -1493,7 +1496,7 @@ function makeCharacter(def) {
       // springs and timers for the animation
       hY: mkSpring(), hP: mkSpring(), cY: mkSpring(), sq: mkSpring(1), shift: mkSpring(), shiftTo: Math.random() < 0.5 ? -1 : 1, nextShift: rand(3, 8),
       sighStart: -1, nextSigh: rand(15, 50), dozeSince: -1, catches: [], wavePh: 0, legPh: [Math.random() * 6, Math.random() * 6 + Math.PI], legAmp: [0.2, 0.2],
-      sacNext: 0, microX: 0, microY: 0, lastBigTurn: -9, danceTilt: 0,
+      sacNext: 0, microX: 0, microY: 0, lastBigTurn: -9, danceTilt: 0, dozeS: mkSpring(0), startleS: mkSpring(0),
     },
   };
   paintCharacter(c);
@@ -1960,7 +1963,7 @@ function signArms(c, t, dt) {
     c.attend = { target: sign.center, w: 0.65 * Math.sin(Math.PI * lp), sign: true };
   }
 }
-for (const c of characters) { c.hooks.push(roastArm, signArms, dance); }
+for (const c of characters) { c.hooks.push(dance, roastArm, signArms); }   // dance moves the chest first, then the hands find the stick/sign
 
 // ---------------------------------------------------------------------
 //  Mouse
@@ -2402,7 +2405,7 @@ const _idle = new THREE.Vector3(), _look = new THREE.Vector3(), _loc = new THREE
 function wakeUp(c, t) {
   const st = c.st;
   st.dozing = false; st.wakeStart = t; st.startle = 1;
-  st.doze = Math.min(st.doze, 0.3);
+  st.dozeS.x = Math.min(st.dozeS.x, 0.3); st.dozeS.v = 0; st.doze = st.dozeS.x;
   st.nextYawn = t + rand(2.2, 3.5);      // a sleepy yawn right after
   st.gazeUntil = 0;
   bang.c = c; bang.life = 0; bang.s.visible = true; bang.sp = mkSpring(0);
@@ -2495,14 +2498,16 @@ function updateCharacter(c, dt, t, mouseActive) {
     }
   }
   // Dozing: the head droops, catches itself once or twice (the classic nod-off), then settles
-  st.doze = damp(st.doze, st.dozing ? 1 : 0, st.dozing ? 0.55 : 3.5, dt);
+  // drowsiness eases in from standing still (no sudden start), and eases out on waking
+  st.doze = clamp(spring(st.dozeS, st.dozing ? 1 : 0, st.dozing ? 0.16 : 0.7, 1, dt), 0, 1);
   let caught = 0;
   if (st.dozing) {
     if (st.dozeSince < 0) { st.dozeSince = t; st.catches = [t + rand(2.4, 3.4), t + rand(5, 6.6)]; if (Math.random() < 0.4) st.catches.pop(); }
-    for (const ct of st.catches) { const d = t - ct; if (d > 0 && d < 1.4) caught = Math.max(caught, d < 0.12 ? eOutCubic(d / 0.12) : 1 - eInOutSine((d - 0.12) / 1.28)); }
+    for (const ct of st.catches) { const d = t - ct; if (d > 0 && d < 2.1) caught = Math.max(caught, d < 0.45 ? eInOutSine(d / 0.45) : 1 - eInOutSine((d - 0.45) / 1.65)); }
   } else st.dozeSince = -1;
   st.startle = Math.max(0, st.startle - dt * 1.6);
-  const doze = st.doze, dozeHead = doze * (1 - 0.75 * caught);
+  const doze = st.doze, dozeHead = doze * (1 - 0.5 * caught);
+  const startle = spring(st.startleS, st.startle, 2.4, 0.75, dt);   // a quick but smooth flinch, never a snap
   // Wave: the arm swings up with a little overshoot, waves fast then slower, and drops with ease
   let wave = 0, waveSwing = 0;
   if (st.waveStart >= 0 && t >= st.waveStart) {
@@ -2593,15 +2598,16 @@ function updateCharacter(c, dt, t, mouseActive) {
     const L = c.arms[i], s = i ? 1 : -1;
     aimLimb(L, _u.copy(L.dirU).lerp(_v.set(s * 0.9, 0.25, 0.1), hop * 0.55), _l.copy(L.dirL).lerp(_w.set(s * 0.5, 0.8, 0.1), hop * 0.5));
   }
-  for (const h of c.hooks) h(c, t, dt);   // props: marshmallow stick, the now-playing sign, dancing
   // lean back a little when looking high up, puff up on a sigh, slump after it, bend into a crouch
   c.chestPivot.rotation.x += -Math.max(0, st.lookPitch - 0.6) * 0.35 + 0.06 * slump - 0.04 * sigh + 0.05 * crouch;
+  // props last, once the chest has settled for this frame, so held things stay in the hands
+  for (const h of c.hooks) h(c, t, dt);   // dancing, marshmallow stick, the now-playing sign
 
   // Head (with a little wandering of its own, so nobody ever holds perfectly still)
   const ny = fbm1(ta * 0.17 + c.seed * 3) * 0.05 * (1 - 0.7 * st.mouseW) * (1 - doze);
   const np = fbm1(ta * 0.19 + c.seed * 5) * 0.03 * (1 - doze);
   c.head.rotation.y = st.lookYaw * 0.72 + ny;
-  c.head.rotation.x = -st.lookPitch + dozeHead * (0.5 + 0.08 * br) - yawn * 0.42 + yawnPre * 0.1 - st.startle * 0.3 + 0.015 * br
+  c.head.rotation.x = -st.lookPitch + dozeHead * (0.5 + 0.08 * br) - yawn * 0.42 + yawnPre * 0.1 - startle * 0.3 + 0.015 * br
     + talk * 0.07 + st.nod + listen * 0.09 - sigh * 0.1 + slump * 0.08 + np;
   const shake = (wakeP > 0.3 && wakeP < 0.75) ? 0.14 * Math.sin((wakeP - 0.3) * 40) * (0.75 - wakeP) * 2.2 : 0;
   const ws = st.waveSide ? 1 : -1;
@@ -2679,7 +2685,7 @@ function updateCharacters(dt, t) {
   if (waver && waver.st.waveStart < 0 && !waver.st.dozing && Math.random() < dt / 140 * calm().activity) waver.st.waveStart = t;
 
   for (const c of characters) {
-    if (c.st.dozing && t > c.st.dozeEnd) { c.st.dozing = false; c.st.startle = 1; c.st.nextYawn = t + rand(1, 2.5); }
+    if (c.st.dozing && t > c.st.dozeEnd) { c.st.dozing = false; c.st.startle = 0.35; c.st.nextYawn = t + rand(1, 2.5); }
     updateCharacter(c, dt, t, mouseActive);
   }
 
@@ -2942,6 +2948,122 @@ const post = (() => {
   const active = () => GFX.level >= 1;
   const sync = (m) => { const u = m.uniforms; u.uNear.value = camera.near; u.uFar.value = camera.far; u.uStart.value = S.BLUR_START; u.uFull.value = Math.max(S.BLUR_START + 1, S.BLUR_FULL); u.uSky.value = S.SKY_BLUR; u.uWater.value = S.WATER_BLUR; };
   const run = (mat, dst) => { quad.material = mat; renderer.setRenderTarget(dst); renderer.render(quadScene, quadCam); };
+
+  // Filters over the whole picture (FILTER). The finished frame is drawn to `filtered`, then restyled.
+  // Each works in screen pixels (FILTER_SIZE points each), in sRGB so steps and dots look even.
+  const FILTER_MODES = { dither: 1, pixel: 2, handheld: 3, crt: 4, comic: 5, paint: 6, film: 7 };
+  let filtered = null;
+  const filterMat = shader({ tSrc: { value: null }, uRes: { value: new THREE.Vector2(1, 1) }, uMode: { value: 0 }, uSize: { value: 3 }, uAmt: { value: 1 }, uTime: { value: 0 } }, `
+    uniform sampler2D tSrc; uniform vec2 uRes; uniform int uMode; uniform float uSize, uAmt, uTime; varying vec2 vUv;
+    vec3 toS(vec3 c){ c = max(c, 0.0); return mix(c * 12.92, 1.055 * pow(c, vec3(1.0 / 2.4)) - 0.055, step(0.0031308, c)); }
+    vec3 toL(vec3 c){ c = clamp(c, 0.0, 1.0); return mix(c / 12.92, pow((c + 0.055) / 1.055, vec3(2.4)), step(0.04045, c)); }
+    vec3 tex(vec2 uv){ return toS(texture2D(tSrc, clamp(uv, 0.0, 1.0)).rgb); }
+    float lum(vec3 c){ return dot(c, vec3(0.299, 0.587, 0.114)); }
+    float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+    float bayer2(vec2 a){ a = floor(a); return fract(dot(a, vec2(0.5, a.y * 0.75))); }
+    float bayer4(vec2 a){ return bayer2(0.5 * a) * 0.25 + bayer2(a); }
+    float bayer8(vec2 a){ return bayer4(0.5 * a) * 0.25 + bayer2(a); }
+    vec3 sat(vec3 c, float k){ return mix(vec3(lum(c)), c, k); }
+    void main(){
+      vec3 orig = tex(vUv), col = orig;
+      vec2 fc = gl_FragCoord.xy;
+      if (uMode == 1) {                         // Dither: few colours, ordered (Bayer) dither pattern
+        vec2 cell = floor(fc / uSize);
+        vec3 c = sat(tex((cell + 0.5) * uSize / uRes), 1.15);
+        float d = bayer8(cell) - 0.5;
+        col = floor(c * 3.0 + d + 0.5) / 3.0;
+      } else if (uMode == 2) {                  // Pixel art: big pixels, a small palette, soft dither, dark outlines
+        float px = uSize * 2.0;
+        vec2 cell = floor(fc / px);
+        vec3 c = sat(tex((cell + 0.5) * px / uRes), 1.2);
+        float d = (bayer4(cell) - 0.5) * 0.6;
+        col = floor(c * 6.0 + d + 0.5) / 6.0;
+        float l = lum(c);
+        float e = max(abs(l - lum(tex((cell + vec2(1.5, 0.5)) * px / uRes))), abs(l - lum(tex((cell + vec2(0.5, 1.5)) * px / uRes))));
+        col *= 1.0 - 0.45 * smoothstep(0.12, 0.3, e);
+      } else if (uMode == 3) {                  // Retro handheld: four shades of green, dithered
+        float px = uSize * 1.5;
+        vec2 cell = floor(fc / px);
+        float l = lum(tex((cell + 0.5) * px / uRes));
+        l = clamp((l - 0.05) * 1.25, 0.0, 1.0);
+        float i = clamp(floor(l * 3.0 + (bayer4(cell) - 0.5) * 0.9 + 0.5), 0.0, 3.0);
+        col = i < 0.5 ? vec3(0.06, 0.22, 0.06) : i < 1.5 ? vec3(0.19, 0.38, 0.19) : i < 2.5 ? vec3(0.55, 0.67, 0.06) : vec3(0.61, 0.74, 0.06);
+      } else if (uMode == 4) {                  // CRT TV: curved glass, colour fringes, scanlines, shadow mask
+        vec2 q = vUv * 2.0 - 1.0;
+        q *= 1.0 + 0.05 * vec2(q.y * q.y, q.x * q.x);
+        vec2 uv = q * 0.5 + 0.5;
+        if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) { col = vec3(0.0); }
+        else {
+          float ca = 0.6 * uSize / uRes.x;
+          col = vec3(tex(uv + vec2(ca, 0.0)).r, tex(uv).g, tex(uv - vec2(ca, 0.0)).b);
+          float line = 0.55 + 0.45 * pow(sin(uv.y * uRes.y / uSize * 3.14159), 2.0);
+          float m = mod(floor(fc.x / max(1.0, uSize * 0.5)), 3.0);
+          vec3 mask = m < 1.0 ? vec3(1.0, 0.78, 0.78) : m < 2.0 ? vec3(0.78, 1.0, 0.78) : vec3(0.78, 0.78, 1.0);
+          col *= line * mask * 1.35 * (0.985 + 0.015 * sin(uTime * 60.0));
+          vec2 v = uv * (1.0 - uv); col *= pow(v.x * v.y * 18.0, 0.22);
+        }
+      } else if (uMode == 5) {                  // Comic: flat colours, ink dots in the shadows, black outlines, paper
+        vec3 c = sat(orig, 1.35);
+        vec3 flatc = floor(c * 4.0 + 0.5) / 4.0;
+        float l = lum(orig);
+        vec2 r = mat2(0.7071, -0.7071, 0.7071, 0.7071) * fc / (uSize * 2.2);
+        float rad = sqrt(max(0.0, 1.0 - l)) * 0.6;
+        float dotm = 1.0 - smoothstep(rad - 0.08, rad + 0.08, length(fract(r) - 0.5));
+        col = mix(vec3(0.98, 0.95, 0.86), flatc, 0.92) * (1.0 - 0.55 * dotm);
+        vec2 o = vec2(uSize * 0.6) / uRes;
+        float gx = lum(tex(vUv + vec2(o.x, 0.0))) - lum(tex(vUv - vec2(o.x, 0.0)));
+        float gy = lum(tex(vUv + vec2(0.0, o.y))) - lum(tex(vUv - vec2(0.0, o.y)));
+        col *= 1.0 - smoothstep(0.1, 0.22, length(vec2(gx, gy)));
+      } else if (uMode == 6) {                  // Oil paint: Kuwahara (each pixel takes the calmest nearby patch) + canvas weave
+        vec2 st = vec2(uSize * 0.8) / uRes;
+        vec3 m0 = vec3(0.0), m1 = vec3(0.0), m2 = vec3(0.0), m3 = vec3(0.0), s0 = vec3(0.0), s1 = vec3(0.0), s2 = vec3(0.0), s3 = vec3(0.0);
+        for (int j = 0; j <= 3; j++) for (int i = 0; i <= 3; i++) {
+          vec3 a = tex(vUv + vec2(-float(i), -float(j)) * st); m0 += a; s0 += a * a;
+          vec3 b = tex(vUv + vec2( float(i), -float(j)) * st); m1 += b; s1 += b * b;
+          vec3 c = tex(vUv + vec2(-float(i),  float(j)) * st); m2 += c; s2 += c * c;
+          vec3 d = tex(vUv + vec2( float(i),  float(j)) * st); m3 += d; s3 += d * d;
+        }
+        m0 /= 16.0; m1 /= 16.0; m2 /= 16.0; m3 /= 16.0;
+        float v0 = dot(s0 / 16.0 - m0 * m0, vec3(1.0)), v1 = dot(s1 / 16.0 - m1 * m1, vec3(1.0));
+        float v2 = dot(s2 / 16.0 - m2 * m2, vec3(1.0)), v3 = dot(s3 / 16.0 - m3 * m3, vec3(1.0));
+        col = m0; float best = v0;
+        if (v1 < best) { best = v1; col = m1; } if (v2 < best) { best = v2; col = m2; } if (v3 < best) { best = v3; col = m3; }
+        col = sat(col, 1.12);
+        float weave = (sin(fc.x * 1.7) * sin(fc.y * 1.7)) * 0.025 + (hash(floor(fc / 2.0)) - 0.5) * 0.03;
+        col *= 1.0 + weave;
+      } else if (uMode == 7) {                  // Old film: sepia, grain, flicker, gate weave, scratches, dust
+        float fr = floor(uTime * 18.0);
+        vec2 uv = vUv + vec2(0.0, (hash(vec2(fr, 3.0)) - 0.5) * 0.004);
+        vec3 c = tex(uv);
+        float l = lum(c);
+        col = mix(c, vec3(l) * vec3(1.08, 0.94, 0.74), 0.85);
+        col = (col - 0.5) * 1.12 + 0.5;
+        col += (hash(floor(fc / max(1.0, uSize * 0.5)) + fr) - 0.5) * 0.13;
+        col *= 0.93 + 0.07 * hash(vec2(fr, 9.0));
+        float sx = hash(vec2(floor(uTime * 5.0), 1.0));
+        col *= 1.0 - 0.35 * (1.0 - smoothstep(0.0, 1.2 * uSize / uRes.x, abs(vUv.x - sx))) * step(0.55, hash(vec2(floor(uTime * 5.0), 7.0)));
+        col *= 1.0 - 0.6 * step(0.9985, hash(floor(fc / (uSize * 1.5)) + fr * 1.7));
+        vec2 v = vUv * (1.0 - vUv); col *= pow(v.x * v.y * 16.0, 0.35);
+      }
+      gl_FragColor = vec4(toL(mix(orig, col, uAmt)), 1.0);
+      #include <colorspace_fragment>
+    }`);
+  // Draw the finished frame to the filter's input instead of the screen, when a filter is on.
+  function filterTarget() {
+    const mode = FILTER_MODES[S.FILTER] || 0;
+    if (!mode || !(S.FILTER_STRENGTH > 0)) return null;
+    if (!filtered) { filtered = new THREE.WebGLRenderTarget(1, 1, { depthBuffer: false, stencilBuffer: false }); filtered.texture.colorSpace = THREE.SRGBColorSpace; }
+    if (filtered.width !== size.x || filtered.height !== size.y) filtered.setSize(size.x, size.y);
+    return filtered;
+  }
+  function runFilter() {
+    const u = filterMat.uniforms;
+    u.tSrc.value = filtered.texture; u.uRes.value.set(size.x, size.y);
+    u.uMode.value = FILTER_MODES[S.FILTER] || 0;
+    u.uSize.value = Math.max(1, S.FILTER_SIZE * renderer.getPixelRatio());
+    u.uAmt.value = clamp(S.FILTER_STRENGTH, 0, 1); u.uTime.value = simTime;
+    run(filterMat, null);
+  }
   const blurPass = (mat, src, dst, dx, dy) => { mat.uniforms.tSrc.value = src; mat.uniforms.uDir.value.set(dx, dy); run(mat, dst); };
   function render() {
     const reflOn = S.REFLECTIONS > 0 && GFX.level >= 2;
@@ -3019,7 +3141,9 @@ const post = (() => {
     u.uVignette.value = S.VIGNETTE;
     u.uHeat.value = wx.heat * env.day;
     u.uTime.value = simTime;
-    run(compMat, null);
+    const ft = filterTarget();
+    run(compMat, ft);
+    if (ft) runFilter();
   }
   return { render, active };
 })();
@@ -3269,6 +3393,9 @@ const PANEL_GROUPS = [
     { k: 'PHONE_BATTERY_SAVER', label: '15 fps when the battery is low (app)' },
   ]],
   ['Effects', [
+    { k: 'FILTER', label: 'Filter over everything', options: [['none', 'Off'], ['dither', 'Dither'], ['pixel', 'Pixel art'], ['handheld', 'Retro handheld (green)'], ['crt', 'CRT TV'], ['comic', 'Comic halftone'], ['paint', 'Oil paint'], ['film', 'Old film']] },
+    { k: 'FILTER_SIZE', label: 'Filter size', min: 1, max: 10, step: 0.5 },
+    { k: 'FILTER_STRENGTH', label: 'Filter strength', min: 0, max: 1, step: 0.05 },
     { k: 'COLOR_GRADE', label: 'Colour grade', options: [['natural', 'Natural'], ['film', 'Film'], ['golden', 'Golden'], ['pastel', 'Pastel'], ['moody', 'Moody'], ['vivid', 'Vivid']] },
     { k: 'BLOOM', label: 'Bloom (glow)', min: 0, max: 1.5, step: 0.05 },
     { k: 'SUN_RAYS', label: 'Sun rays', min: 0, max: 1.5, step: 0.05 },
