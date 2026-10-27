@@ -147,6 +147,9 @@ const TALL_PALM_RIGHT_X  = 0.4;         // right palm: metres out from the right
 const TALL_PALM_RIGHT_Z  = -2.6;        // right palm: depth
 const TALL_PALM_SIZE     = 1.0;         // palm height, 1 = normal
 const TILT_PARALLAX      = 0;           // Android app: tilting the phone shifts the camera a little for a 3D feel. 0 = off (the app turns it on)
+const PHONE_FPS          = 60;          // phone app / wallpaper frame rate, up to 120 (more = smoother, more battery)
+const PHONE_RESOLUTION   = 1.5;         // phone render sharpness (pixels per screen point). Pixel 10 Pro XL screens are 3
+const PHONE_BATTERY_SAVER = true;       // phone: drop to 15 fps when the battery is under 20% and not charging
 const NIGHT_SKY_DARK     = 0;           // darker night sky, 0–1. Saves a little battery on OLED phone screens (the app uses 0.6)
 
 // ---- Effects (each one 0 = off) -----------------------------------------------------
@@ -237,6 +240,23 @@ const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 const lerp = (a, b, t) => a + (b - a) * t;
 const smooth = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
 const damp = (cur, target, rate, dt) => lerp(cur, target, 1 - Math.exp(-rate * dt));
+// ---- Animation toolkit ----
+// Smooth value noise (−1…1): idle motion wanders like a living thing instead of repeating like a sine.
+const _nh = (n) => { const v = Math.sin(n * 127.1 + 311.7) * 43758.5453; return (v - Math.floor(v)) * 2 - 1; };
+const noise1 = (x) => { const i = Math.floor(x), f = x - i, u = f * f * f * (f * (f * 6 - 15) + 10); return _nh(i) * (1 - u) + _nh(i + 1) * u; };
+const fbm1 = (x) => noise1(x) * 0.62 + noise1(x * 2.13 + 17.3) * 0.27 + noise1(x * 4.71 + 41.9) * 0.11;
+// Springs: follow a target with weight, a touch of overshoot and settle (zeta < 1 = bouncier).
+// State { x, v }; freq in Hz. Small substeps keep it steady on slow frames.
+const mkSpring = (x = 0) => ({ x, v: 0 });
+function spring(sp, target, freq, zeta, dt) {
+  const w = 2 * Math.PI * freq, n = Math.min(12, Math.max(1, Math.ceil(dt / 0.012))), h = dt / n;
+  for (let i = 0; i < n; i++) { sp.v += (w * w * (target - sp.x) - 2 * zeta * w * sp.v) * h; sp.x += sp.v * h; }
+  return sp.x;
+}
+const eInCubic = (x) => x * x * x;
+const eOutCubic = (x) => 1 - Math.pow(1 - x, 3);
+const eInOutSine = (x) => 0.5 - 0.5 * Math.cos(Math.PI * clamp(x, 0, 1));
+const eOutBack = (x, k = 1.7) => 1 + (k + 1) * Math.pow(x - 1, 3) + k * Math.pow(x - 1, 2);
 const rand = (a, b) => a + Math.random() * (b - a);
 const DEG = Math.PI / 180;
 let seedState = 20240611;
@@ -252,7 +272,7 @@ const FILE_SETTINGS = {
   MOUSE_FOLLOW, MOUSE_DEPTH, MOUSE_IDLE_SECONDS, WAKE_ON_HOVER,
   DEPTH_BLUR, BLUR_START, BLUR_FULL, SKY_BLUR, WATER_BLUR, SATURATION, CONTRAST, WARMTH, VIGNETTE, CAMERA_ZOOM, CAMERA_HEIGHT, CAMERA_DRIFT,
   TALL_GROUP_POSITION, TALL_ZOOM, TALL_PAN, TALL_PALMS, TALL_PALM_LEFT_X, TALL_PALM_LEFT_Z, TALL_PALM_RIGHT_X, TALL_PALM_RIGHT_Z, TALL_PALM_SIZE,
-  TILT_PARALLAX, NIGHT_SKY_DARK,
+  TILT_PARALLAX, NIGHT_SKY_DARK, PHONE_FPS, PHONE_RESOLUTION, PHONE_BATTERY_SAVER,
   COLOR_GRADE, BLOOM, SUN_RAYS, CONTACT_SHADING, REFLECTIONS, FIRELIGHT_ON_FACES, WATER_SHINE,
   OCEAN_SPEED, CLOUD_SPEED, CLOUD_AMOUNT, FIRE_BRIGHTNESS, SHOW_GULLS, SHOW_SHOOTING_STARS, SHOW_ZZZ, CHARACTER_COUNT, CHARACTER_FLAT_SHADING,
   WIND, SHOW_FIREFLIES, GLOWING_WAVES, SHOW_MARSHMALLOWS, CLICK_TO_INTERACT, NOW_PLAYING_SIGN, DANCE_TO_MUSIC,
@@ -327,7 +347,7 @@ if (Q.has('gfx')) GFX_LEVEL = clamp(Math.round(qnum('gfx', GFX_LEVEL)), 0, 2);  
 // Phone live wallpaper (?wallpaper): it runs all day behind the home screen, so it draws fewer pixels and frames.
 const WALLPAPER = Q.has('wallpaper');
 let lowBattery = false;   // wallpaper: below 20% and not charging -> 15 fps
-if (WALLPAPER) try {
+if (WALLPAPER || Q.has('app')) try {
   navigator.getBattery && navigator.getBattery().then((b) => {
     const check = () => { lowBattery = !b.charging && b.level <= 0.2; };
     check(); b.addEventListener('levelchange', check); b.addEventListener('chargingchange', check);
@@ -1170,7 +1190,8 @@ function updateFireBurst(dt) {
   const pos = B.points.geometry.attributes.position;
   B.data.forEach((d, i) => {
     d.life += dt / (d.dur || 1);
-    d.vy -= 3.2 * dt; d.vx += env.wind * 0.6 * dt;
+    const drag = Math.exp(-1.6 * dt);
+    d.vx *= drag; d.vz *= drag; d.vy = d.vy * Math.exp(-0.6 * dt) - 3.2 * dt; d.vx += env.wind * 0.6 * dt;
     d.x += d.vx * dt; d.y += d.vy * dt; d.z += d.vz * dt;
     pos.setXYZ(i, d.x, d.life < 1 ? Math.max(0.05, d.y) : -50, d.z);
   });
@@ -1257,8 +1278,13 @@ const lightning = { flash: 0, next: 6, seq: [] };
 function updateLightning(t, dt) {
   lightning.flash = 0;
   if (wx.storm < 0.4) { lightning.next = t + rand(4, 10); return; }
-  if (t > lightning.next) { lightning.seq = [t, t + rand(0.12, 0.22), t + rand(0.3, 0.45)]; lightning.next = t + rand(7, 22); }
-  for (const s0 of lightning.seq) { const d = t - s0; if (d >= 0 && d < 0.25) lightning.flash = Math.max(lightning.flash, (1 - d / 0.25) * wx.storm); }
+  if (t > lightning.next) {
+    let at = t; lightning.seq = [];
+    const n = 3 + Math.floor(Math.random() * 3);
+    for (let i = 0; i < n; i++) { lightning.seq.push({ at, p: i === 0 ? 0.35 : rand(0.65, 1) * (1 - i * 0.1) }); at += rand(0.05, 0.16); }
+    lightning.next = t + rand(7, 22);
+  }
+  for (const s0 of lightning.seq) { const d = t - s0.at; if (d >= 0 && d < 0.7) lightning.flash = Math.max(lightning.flash, s0.p * Math.exp(-d * 11) * wx.storm); }
 }
 // Fireflies on warm, dry nights (in shader: they drift and blink by themselves)
 const fireflies = (() => {
@@ -1276,10 +1302,14 @@ const fireflies = (() => {
     uniforms: u, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
     vertexShader: `attribute float aPh; uniform float uTime, uPixelRatio; varying float vB;
       void main(){
-        vec3 p = position + vec3(sin(uTime * 0.31 + aPh) * 0.9 + sin(uTime * 0.13 + aPh * 3.0) * 0.6, sin(uTime * 0.47 + aPh * 2.0) * 0.35, cos(uTime * 0.27 + aPh) * 0.7);
+        float cyc = fract(uTime * (0.16 + fract(aPh * 1.37) * 0.14) + fract(aPh * 0.73));
+        float f1 = smoothstep(0.0, 0.035, cyc) * (1.0 - smoothstep(0.035, 0.22, cyc));
+        float f2 = step(0.5, fract(aPh * 2.31)) * smoothstep(0.27, 0.3, cyc) * (1.0 - smoothstep(0.3, 0.44, cyc));
+        vB = max(f1, f2 * 0.8);
+        vec3 p = position + vec3(sin(uTime * 0.31 + aPh) * 0.9 + sin(uTime * 0.13 + aPh * 3.0) * 0.6 + sin(uTime * 0.71 + aPh * 5.0) * 0.12,
+                                 sin(uTime * 0.47 + aPh * 2.0) * 0.35 + sin(uTime * 1.13 + aPh) * 0.06 + vB * 0.08,
+                                 cos(uTime * 0.27 + aPh) * 0.7 + cos(uTime * 0.83 + aPh * 4.0) * 0.1);
         vec4 mv = modelViewMatrix * vec4(p, 1.0);
-        float blink = sin(uTime * (0.7 + fract(aPh) * 0.9) + aPh);
-        vB = smoothstep(0.35, 0.95, blink);
         gl_PointSize = 0.42 * uPixelRatio * 600.0 / -mv.z;
         gl_Position = projectionMatrix * mv;
       }`,
@@ -1460,6 +1490,10 @@ function makeCharacter(def) {
       gaze: 'rest', gazeUntil: 0, gazeOther: null, jx: 0, jy: 0, pendingGlance: null,
       mouseW: 0, mouseRate: rand(1.6, 2.6), headRate: rand(3.0, 4.2),
       lookYaw: 0, lookPitch: 0, seaSide: 1,
+      // springs and timers for the animation
+      hY: mkSpring(), hP: mkSpring(), cY: mkSpring(), sq: mkSpring(1), shift: mkSpring(), shiftTo: Math.random() < 0.5 ? -1 : 1, nextShift: rand(3, 8),
+      sighStart: -1, nextSigh: rand(15, 50), dozeSince: -1, catches: [], wavePh: 0, legPh: [Math.random() * 6, Math.random() * 6 + Math.PI], legAmp: [0.2, 0.2],
+      sacNext: 0, microX: 0, microY: 0, lastBigTurn: -9, danceTilt: 0,
     },
   };
   paintCharacter(c);
@@ -1467,6 +1501,21 @@ function makeCharacter(def) {
 }
 
 // Poses (all in the character's body space, facing +Z)
+// A dangling leg: a pendulum whose tempo and size wander (sometimes nearly still, sometimes kicking),
+// that falls in with the beat while music plays. The foot trails the swing. Returns [swing, foot lag].
+function legSwing(c, i, a) {
+  const st = c.st, rt = a.rt;
+  let tempo = 2.1 * (0.85 + 0.3 * noise1(rt * 0.05 + c.seed + i * 3.1)) * Math.sqrt(calm().speed);
+  let amp = 0.3 * (0.2 + 0.8 * smooth(-0.35, 0.55, noise1(rt * 0.06 + c.seed * 2 + i * 5.7))) + 0.03;
+  tempo = lerp(tempo, Math.PI * music.bpm / 60, music.groove);   // one swing every two beats
+  amp = lerp(amp, 0.3, music.groove) * (1 - a.doze);
+  st.legPh[i] += a.dt * tempo * (1 - 0.7 * a.doze);
+  st.legAmp[i] = damp(st.legAmp[i], amp, 1.2, a.dt);
+  return [Math.sin(st.legPh[i]) * st.legAmp[i], Math.cos(st.legPh[i]) * st.legAmp[i]];
+}
+
+// Poses (all in the character's body space, facing +Z). Each sets its own chest lean and sway.
+const _foot = new THREE.Vector3(), _kneePole = new THREE.Vector3(0, 0, 1);
 const POSES = {
   crisscross: {
     bodyY: () => 0.5,
@@ -1476,11 +1525,17 @@ const POSES = {
         aimLimb(L, _u.set(s * 0.62, -0.12, 0.78), _l.set(-s * 1.0, s > 0 ? 0.0 : -0.17, 0.42));
         footAbs(L, Math.atan2(-s * 1.0, 0.42) * 0.8);
       }
-      c.chestPivot.rotation.z = 0.035 * Math.sin(t * 0.5 + c.seed) * (1 - a.doze);
+      // a slow, wandering rock from side to side, leaning in toward the fire now and then
+      const awake = 1 - a.doze;
+      c.chestPivot.rotation.z = 0.045 * fbm1(t * 0.21 + c.seed) * awake;
+      c.chestPivot.rotation.x = (0.03 + 0.04 * fbm1(t * 0.09 + c.seed * 3)) * awake + 0.1 * a.doze;
       for (let i = 0; i < 2; i++) {
         const s = i ? 1 : -1;
-        const lift = Math.max(a.yawn * 0.5, a.jolt * 0.55);
-        armIK(c, i, s * (0.74 + lift * 0.2), -0.4 + lift * 1.2, 0.3 - lift * 0.1, s, -0.4, -0.6);
+        const lift = Math.max(a.yawn * 0.5, a.jolt * 0.55, a.sigh * 0.12);
+        // hands rest on the knees and drift; now and then one drums its fingers on a knee
+        const drum = i === c.st.waveSide ? Math.max(0, noise1(t * 0.13 + c.seed * 7) - 0.35) * 1.6 * awake : 0;
+        const tap = drum * 0.035 * Math.max(0, Math.sin(t * 7.5 + c.seed));
+        armIK(c, i, s * (0.74 + lift * 0.2) + 0.02 * noise1(t * 0.3 + i * 9 + c.seed), -0.4 + lift * 1.2 + tap, 0.3 - lift * 0.1 + 0.02 * noise1(t * 0.27 + i * 4), s, -0.4, -0.6);
       }
     },
   },
@@ -1490,36 +1545,51 @@ const POSES = {
       const upI = c.sideToCam > 0 ? 1 : 0, hangI = 1 - upI;
       const sUp = upI ? 1 : -1, sH = -sUp;
       const up = c.legs[upI], hang = c.legs[hangI];
-      aimLimb(up, _u.set(sUp * 0.5, 0.9, 0.7), _l.set(sUp * 0.05, -1, -0.12));
+      // the raised knee drifts a little (hugged loosely); the other leg swings
+      const kd = 0.06 * fbm1(t * 0.15 + c.seed) * (1 - a.doze);
+      aimLimb(up, _u.set(sUp * (0.5 + kd), 0.9, 0.7), _l.set(sUp * 0.05, -1, -0.12));
       footAbs(up, sUp * 0.1);
-      const sw = Math.sin(t * 2.0 + c.seed) * 0.28 * (1 - a.doze);
+      const [sw, lag] = legSwing(c, hangI, a);
       aimLimb(hang, _u.set(sH * 0.1, -0.1, 1), _l.set(sH * 0.02, -1, 0.32 + sw));
-      footRel(hang, 0.3 + sw * 0.4);
+      footRel(hang, 0.3 + sw * 0.4 - lag * 0.3);
       armIK(c, upI, up.knee.x + sUp * 0.02, up.knee.y + 0.11, up.knee.z + 0.03, sUp, 0.1, -0.7);
-      armIK(c, hangI, sH * 0.66, -0.3 + Math.max(a.yawn * 0.5, a.jolt * 0.6), -0.06, sH, 0.3, -0.5);
+      armIK(c, hangI, sH * 0.66 + 0.02 * noise1(t * 0.31 + c.seed), -0.3 + Math.max(a.yawn * 0.5, a.jolt * 0.6, a.sigh * 0.1), -0.06 + 0.02 * noise1(t * 0.23 + 5), sH, 0.3, -0.5);
+      c.chestPivot.rotation.z = 0.03 * fbm1(t * 0.19 + c.seed * 2) * (1 - a.doze);
+      c.chestPivot.rotation.x = 0.03 * fbm1(t * 0.11 + c.seed) * (1 - a.doze);
     },
   },
   standing: {
-    bodyY: () => 0.3 + 1.2 + 0.12,
+    bodyY: () => 0.3 + 1.2 + 0.12 - 0.025,
     update(c, t, a) {
+      const st = c.st;
+      // Weight shifts from one leg to the other every few seconds. The hips sway over, the
+      // shoulders counter it, and the feet stay planted (the legs bend to reach them).
+      if (a.rt > st.nextShift) { st.shiftTo = -Math.sign(st.shiftTo || 1) * rand(0.6, 1); st.nextShift = a.rt + rand(4, 11) / Math.sqrt(calm().activity); }
+      const sh = spring(st.shift, st.shiftTo * (1 - a.doze) * (1 - 0.6 * music.groove), 0.32, 0.85, a.dt);
+      c.body.position.x = 0.045 * sh;
+      c.body.position.y -= 0.012 * Math.abs(sh);
+      c.body.rotation.z = -0.03 * sh;
+      c.body.updateMatrix(); _m4.copy(c.body.matrix).invert();
       for (let i = 0; i < 2; i++) {
         const s = i ? 1 : -1, L = c.legs[i];
-        aimLimb(L, _u.set(s * 0.07, -1, 0.0), _l.set(s * 0.02, -1, 0.035));
+        _foot.set(s * 0.244, c.bodyY0 - 1.498, 0.151).applyMatrix4(_m4);   // the resting foot spot, in the body's current space
+        solveIK(L, _foot, _kneePole);
         footAbs(L, s * 0.2);
       }
-      c.chestPivot.rotation.z = 0.04 * Math.sin(t * 0.45 + c.seed);
+      c.chestPivot.rotation.z = 0.06 * sh + 0.03 * fbm1(t * 0.2 + c.seed);
+      c.chestPivot.rotation.x = 0.02 * fbm1(t * 0.13 + c.seed * 4);
       for (let i = 0; i < 2; i++) {
         const s = i ? 1 : -1;
-        const sway = 0.07 * Math.sin(t * 0.9 + i * 1.7 + c.seed);
-        // hands rest beside the belly with the elbows bowed out, so the arms never pass through it
-        armIK(c, i, s * 0.68, -0.22, 0.1 + sway * 1.5, s, 0.0, -0.45);
+        // arms hang loose and drift, swinging back a touch as the hips move (follow-through)
+        const sway = 0.05 * fbm1(t * 0.35 + i * 1.7 + c.seed) - st.shift.v * 0.06;
+        armIK(c, i, s * 0.68, -0.22 + 0.012 * a.br, 0.1 + sway * 1.5, s, 0.0, -0.45);
         _u.copy(_iu).normalize(); _l.copy(_iw).normalize();
         // yawn: big stretch with both arms up
         const up = Math.max(a.yawn * 0.9, a.jolt * 0.5);
         _u.lerp(_v.set(s * 0.45, 1, 0.08), up); _l.lerp(_w.set(s * 0.15, 1, 0.05), up);
-        if (i === c.st.waveSide && a.wave > 0) {
+        if (i === st.waveSide && a.wave > 0) {
           _u.lerp(_v.set(s * 0.55, 1, 0.22), a.wave);
-          _l.lerp(_w.set(s * (0.1 + 0.6 * Math.sin(t * 9)), 1, 0.12), a.wave);
+          _l.lerp(_w.set(s * (0.1 + 0.6 * a.waveSwing), 1, 0.12), a.wave);
         }
         aimLimb(c.arms[i], _u, _l);
       }
@@ -1530,14 +1600,16 @@ const POSES = {
     update(c, t, a) {
       for (let i = 0; i < 2; i++) {
         const s = i ? 1 : -1, L = c.legs[i];
-        const sw = Math.sin(t * 2.3 + (i ? Math.PI : 0) + c.seed) * 0.27 * (1 - a.doze);
+        const [sw, lag] = legSwing(c, i, a);
         aimLimb(L, _u.set(s * 0.16, -0.06, 1), _l.set(s * 0.04, -1, 0.36 + sw));   // swings forward of the rock face
-        footRel(L, 0.3 + sw * 0.4);
+        footRel(L, 0.3 + sw * 0.4 - lag * 0.3);
       }
       for (let i = 0; i < 2; i++) {
         const s = i ? 1 : -1;
-        armIK(c, i, s * 0.66, -0.3 + Math.max(a.yawn * 0.6, a.jolt * 0.7), 0.0, s, 0.3, -0.6);
+        armIK(c, i, s * 0.66 + 0.02 * noise1(t * 0.29 + i * 7 + c.seed), -0.3 + Math.max(a.yawn * 0.6, a.jolt * 0.7, a.sigh * 0.1) + 0.015 * noise1(t * 0.33 + i), 0.02 * noise1(t * 0.21 + i * 3), s, 0.3, -0.6);
       }
+      c.chestPivot.rotation.z = 0.03 * fbm1(t * 0.17 + c.seed * 2) * (1 - a.doze);
+      c.chestPivot.rotation.x = 0.08 + 0.025 * fbm1(t * 0.12 + c.seed);
     },
   },
 };
@@ -1675,9 +1747,9 @@ function updateRoast(t, dt) {
   if (!R.g.visible) { if (c) c.attend = null; return; }
   if (R.state === 'reach') R.mallow.visible = true;
   // where the tip goes: over the fire, or pulled back in front of the face
-  R.roastAt.set(FIRE_POS.x, fire.group.position.y + 0.92 + 0.04 * Math.sin(t * 1.3), FIRE_POS.z);
+  R.roastAt.set(FIRE_POS.x, fire.group.position.y + 0.92 + 0.05 * fbm1(t * 0.4 + 2), FIRE_POS.z);
   c.root.getWorldPosition(_hw); _v.subVectors(_hw, R.roastAt).setY(0).normalize();
-  R.roastAt.addScaledVector(_v, 0.22).add(_w.set(Math.sin(t * 0.7) * 0.05, 0, Math.cos(t * 0.9) * 0.05));
+  R.roastAt.addScaledVector(_v, 0.22).add(_w.set(fbm1(t * 0.35) * 0.06, 0, fbm1(t * 0.31 + 7) * 0.06));
   c.snoutMesh.getWorldPosition(R.face);
   R.face.addScaledVector(_v.multiplyScalar(-1), 0.32 * c.def.scale).y -= 0.05;
   // grip: in front of the chest on the fire side
@@ -1693,7 +1765,8 @@ function updateRoast(t, dt) {
   _w.copy(R.tip).addScaledVector(_v, -L);
   R.stick.position.copy(_w); R.stick.scale.set(1, L, 1); R.stick.quaternion.setFromUnitVectors(UP, _v);
   R.mallow.position.copy(R.tip).addScaledVector(_v, -0.03); R.mallow.quaternion.copy(R.stick.quaternion);
-  R.mallow.rotateY(t * 0.8);
+  R.spin = (R.spin || 0) + dt * (0.7 + 1.1 * Math.max(0, noise1(t * 0.25 + 3)));   // turned now and then for an even toast
+  R.mallow.rotateY(R.spin);
   // colour: white -> golden -> brown, or charred after catching fire
   const tc = R.toast * 2;
   R.mallowMat.color.copy(MALLOW_COLS[0]).lerp(MALLOW_COLS[1], clamp(tc, 0, 1)).lerp(MALLOW_COLS[2], clamp(tc - 1, 0, 1) * 0.7).lerp(MALLOW_COLS[3], R.char);
@@ -1758,23 +1831,25 @@ function updateMusic(t, dt) {
 const _qx = new THREE.Quaternion();
 function dance(c, t, dt) {
   const st = c.st, gr = music.groove * (1 - st.doze) * (st.dozing ? 0 : 1);
-  const rock = c.def.pose === 'rockSit' || c.def.pose === 'rockLegUp';
-  if (gr < 0.002) { st.nod = 0; c.groove = 0; if (rock) c.chestPivot.rotation.z = 0; return; }
-  const ph = music.phase + c.index * 0.03;
-  const beat = Math.pow(0.5 + 0.5 * Math.cos(ph * Math.PI * 2), 3);
-  st.nod = gr * 0.11 * beat;
+  if (gr < 0.002) { st.nod = 0; st.danceTilt = 0; c.groove = 0; return; }
+  const ph = music.phase + c.index * 0.04, bp = ph - Math.floor(ph);
+  // each beat: a quick nod down that eases back up (sharp attack, soft release)
+  const hit = bp < 0.12 ? eOutCubic(bp / 0.12) : Math.exp(-(bp - 0.12) * 5.5);
+  const half = Math.sin(ph * Math.PI);        // every other beat: a lean to one side, then the other
+  st.nod = gr * 0.12 * hit;
+  st.danceTilt = gr * 0.06 * half;
+  c.chestPivot.rotation.z += gr * 0.05 * half;
+  c.chestPivot.position.y -= gr * 0.012 * hit;
   const tap = gr * Math.pow(Math.max(0, Math.sin(ph * Math.PI * 2 + 0.6)), 2);
   if (c.def.pose === 'standing') {
-    c.groove = -0.035 * gr * beat;
+    c.groove = -0.04 * gr * hit;               // knees give on the beat (the legs bend to keep the feet down)
     const L = c.legs[c.sideToCam > 0 ? 1 : 0];
     L.end.quaternion.multiply(_qx.setFromAxisAngle(XAXIS, -0.45 * tap));
   } else if (c.def.pose === 'crisscross') {
-    c.chestPivot.rotation.z += 0.07 * gr * Math.sin(ph * Math.PI);
-    c.groove = 0;
+    c.groove = -0.015 * gr * hit;
   } else {
     for (const L of c.legs) L.end.quaternion.multiply(_qx.setFromAxisAngle(XAXIS, -0.4 * tap));
-    c.chestPivot.rotation.z = 0.04 * gr * Math.sin(ph * Math.PI);   // rock poses don't set this themselves
-    c.groove = 0.015 * gr * beat;
+    c.groove = 0.012 * gr * hit;
   }
 }
 
@@ -1863,7 +1938,7 @@ function signArms(c, t, dt) {
   // damped so a change of direction half-way never jumps
   sign.grab = damp(sign.grab, grabT, 14, dt); sign.size = damp(sign.size, sizeT, 14, dt); sign.lift = damp(sign.lift, liftT, 12, dt);
   const L = sign.lift, held = smooth(0.85, 1, L);
-  const sway = held * (Math.sin(t * 1.1) * 0.03 + music.groove * 0.025 * Math.sin(music.phase * Math.PI));
+  const sway = held * (fbm1(t * 0.45 + 1) * 0.04 + music.groove * 0.025 * Math.sin(music.phase * Math.PI));
   const bob = held * (c.st.nod || 0) * 0.3;
   const size = sign.size * (camera.aspect < 1 ? 1.25 : 1);   // a bigger sign on phones, so the small lines stay readable
   sign.grp.scale.setScalar(Math.max(0.001, size));
@@ -2014,7 +2089,7 @@ function squeezeDir(v) {
   return v;
 }
 
-const env = { night: 0, day: 1, fireOn: 0, alt: 30, wind: 0, windBase: 0, season: 0, autumn: 0, moonIllum: 1, fireBoost: 0 };
+const env = { night: 0, day: 1, fireOn: 0, alt: 30, wind: 0, windBase: 0, season: 0, autumn: 0, moonIllum: 1, fireBoost: 0, gust: 0.5 };
 // Current weather (0–1 each), eased toward the target the weather code sets.
 const wx = { cloud: 0, rain: 0, storm: 0, fog: 0, heat: 0, wind: 0.25, cold: 0 };
 const weatherStatus = { text: 'loading…', ok: false };
@@ -2204,12 +2279,14 @@ function updateEnvironment(t, dt) {
 
   // Campfire — the only warm light after dark
   const on = env.fireOn;
-  const n1 = Math.sin(t * 8.3) * 0.5 + Math.sin(t * 13.7 + 1.1) * 0.3 + Math.sin(t * 21.9 + 2.3) * 0.2;
-  const flick = 0.85 + 0.12 * n1 + 0.05 * Math.sin(t * 3.1);
+  // Wind arrives in gusts that build and fade (shared by the fire, smoke, embers and palms)
+  env.gust = clamp(0.5 + 0.75 * fbm1(t * 0.12 + 3), 0, 1);
+  const n1 = fbm1(t * 5.1) * 0.85 + noise1(t * 13.3 + 4) * 0.3;   // flicker: never repeats
+  const flick = 0.85 + 0.12 * n1 + 0.05 * noise1(t * 1.7 + 9);
   env.fireBoost = Math.max(0, env.fireBoost - dt * 0.9);
   fireLight.intensity = on * 36 * flick * S.FIRE_BRIGHTNESS * (1 + 0.5 * env.fireBoost) * (1 - 0.25 * wx.rain);
-  fireLight.position.set(FIRE_POS.x + Math.sin(t * 5.3) * 0.06, fire.group.position.y + 0.85 + n1 * 0.05, FIRE_POS.z + Math.cos(t * 4.7) * 0.06);
-  const wind = 0.05 * Math.sin(t * 0.31) + 0.03 * Math.sin(t * 1.17 + 0.5) + env.wind * 0.22;   // + leans downwind (+x)
+  fireLight.position.set(FIRE_POS.x + noise1(t * 3.1) * 0.07, fire.group.position.y + 0.85 + n1 * 0.05, FIRE_POS.z + noise1(t * 2.7 + 5) * 0.07);
+  const wind = 0.05 * fbm1(t * 0.25) + 0.035 * noise1(t * 1.1 + 0.5) + env.wind * 0.22 * (0.55 + 0.7 * env.gust);   // + leans downwind (+x)
   const bright = Math.min(1.6, S.FIRE_BRIGHTNESS);
   const camYaw = Math.atan2(camera.position.x - FIRE_POS.x, camera.position.z - FIRE_POS.z);
   fire.flames.forEach((f, i) => {
@@ -2218,9 +2295,11 @@ function updateEnvironment(t, dt) {
     const u = f.material.uniforms, d = f.userData;
     u.uTime.value = t * (0.9 + i * 0.12);
     u.uIntensity.value = on * d.inten * (0.85 + 0.15 * n1) * bright;
-    const sy = on * (0.88 + 0.1 * Math.sin(t * (5.3 + i) + d.seed) + 0.06 * n1) * (1 + 0.35 * env.fireBoost) * (1 - 0.2 * wx.rain);
-    f.scale.set(on * (1 + 0.05 * Math.sin(t * 7 + d.seed)), Math.max(0.001, sy), 1);
-    f.rotation.set(0, camYaw, -wind * 0.9 + 0.04 * Math.sin(t * 3.1 + d.seed), 'YXZ');   // face the camera, lean in the breeze
+    // each flame licks up on its own rhythm; they stretch thinner as they leap
+    const lick = noise1(t * (3.2 + i * 0.7) + d.seed * 10);
+    const sy = on * (0.88 + 0.11 * lick + 0.06 * n1) * (1 + 0.35 * env.fireBoost) * (1 - 0.2 * wx.rain);
+    f.scale.set(on * (1 + 0.05 * noise1(t * 4.3 + d.seed * 7) - 0.04 * lick), Math.max(0.001, sy), 1);
+    f.rotation.set(0, camYaw, -wind * 0.9 + 0.05 * noise1(t * 2.3 + d.seed * 3), 'YXZ');   // face the camera, lean in the breeze
   });
   fire.haze.material.opacity = on * 0.16 * flick * bright;
   // smoke: lighter and lazier by day (smouldering), lit warm near the flames at night
@@ -2228,10 +2307,11 @@ function updateEnvironment(t, dt) {
   _c2.set('#4a4550').lerp(_c1.set('#d4cec4'), env.day);
   for (const p of fire.smoke) {
     p.life += dt / p.dur;
-    if (p.life >= 1) { p.life -= 1; p.x = rand(-0.08, 0.08); p.z = rand(-0.08, 0.08); }
-    const L = p.life;
-    p.sp.position.set(p.x + wind * L * 4 + Math.sin(t * 0.7 + p.ph) * 0.15 * L + L * L * 0.8, smokeBase + L * 3.0, p.z);
-    p.sp.scale.setScalar(0.35 + L * 1.6);
+    if (p.life >= 1) { p.life -= 1; p.x = rand(-0.08, 0.08); p.z = rand(-0.08, 0.08); p.ph = Math.random() * 50; p.spin = rand(-0.5, 0.5); }
+    const L = p.life, up = 1 - Math.pow(1 - L, 1.6);   // quick off the fire, slowing as it cools
+    p.sp.position.set(p.x + wind * L * 4.2 + fbm1(L * 1.6 + p.ph) * 0.3 * L + L * L * 0.8 * (0.6 + 0.8 * env.gust), smokeBase + up * 3.0, p.z + noise1(L * 1.3 + p.ph * 2) * 0.2 * L);
+    p.sp.scale.setScalar(0.35 + Math.sqrt(L) * 1.5);
+    if (p.sp.material.rotation !== undefined) p.sp.material.rotation = (p.spin || 0) * L * 3;
     p.sp.material.color.copy(_c2);
     p.sp.material.opacity = smokeAmt * Math.pow(Math.sin(Math.PI * L), 1.2) * (0.6 + 0.4 * env.day);
   }
@@ -2249,7 +2329,8 @@ function updateEnvironment(t, dt) {
     fire.emberData.forEach((e, i) => {
       e.life += dt * e.speed * 0.5;
       if (e.life > 1) { e.life = 0; e.x = rand(-0.2, 0.2); e.z = rand(-0.2, 0.2); e.speed = rand(0.45, 1.1); }
-      ep.setXYZ(i, e.x + Math.sin(t * 2 + e.ph) * 0.18 * e.life + wind * e.life * 2.5, 0.35 + e.life * 2.6, e.z + Math.cos(t * 1.7 + e.ph) * 0.12 * e.life);
+      const L = e.life, rise = 1 - Math.pow(1 - L, 1.7);   // shoot up, then drift as they cool
+      ep.setXYZ(i, e.x + noise1(L * 2.4 + e.ph) * 0.32 * L + wind * Math.pow(L, 1.4) * 2.8, 0.35 + rise * 2.6, e.z + noise1(L * 2.1 + e.ph * 1.7 + 9) * 0.22 * L);
     });
     ep.needsUpdate = true;
   }
@@ -2262,11 +2343,12 @@ function updateEnvironment(t, dt) {
   fireflies.pts.visible = fireflies.u.uOpacity.value > 0.01;
   // Palms sway
   for (const p of palms) {
-    p.bend = damp(p.bend || 0, env.wind, 1.5, dt);
-    p.crown.rotation.z = Math.sin(t * 0.55 + p.ph) * 0.035 * (1 + p.bend) - p.bend * 0.07;
-    p.crown.rotation.x = Math.sin(t * 0.43 + p.ph * 2) * 0.02 * (1 + p.bend);
-    const fl = 0.04 * (1 + 2.2 * p.bend), fs = 1.3 + 1.6 * p.bend;
-    p.crown.children.forEach((fr) => { if (fr.userData.baseX !== undefined) fr.rotation.x = fr.userData.baseX + Math.sin(t * fs + fr.userData.ph) * fl + p.bend * 0.08; });
+    if (!p.sz) { p.sz = mkSpring(); p.sx = mkSpring(); }
+    const g = env.wind * (0.55 + 0.7 * env.gust);
+    p.crown.rotation.z = spring(p.sz, -g * 0.075 + fbm1(t * 0.22 + p.ph) * 0.03 * (1 + g), 0.42, 0.18, dt);
+    p.crown.rotation.x = spring(p.sx, fbm1(t * 0.17 + p.ph * 2) * 0.02 * (1 + g), 0.38, 0.2, dt);
+    const fl = 0.035 * (1 + 2.4 * g), fs = 1.1 + 1.8 * g, trail = -p.sz.v * 0.6;
+    p.crown.children.forEach((fr) => { if (fr.userData.baseX !== undefined) fr.rotation.x = fr.userData.baseX + fbm1(t * fs + fr.userData.ph * 3) * fl + g * 0.08 + trail * Math.sin(fr.rotation.y); });
   }
 
   // Gulls by day
@@ -2276,8 +2358,10 @@ function updateEnvironment(t, dt) {
     const a = t * gl.sp + gl.ph;
     gl.g.position.set(gl.cx + Math.cos(a) * gl.rad, gl.cy + Math.sin(a * 2.3) * 0.8, gl.cz + Math.sin(a) * gl.rad * 0.5);
     gl.g.rotation.set(0, Math.atan2(-Math.sin(a) * Math.sign(gl.sp), Math.cos(a) * 0.5 * Math.sign(gl.sp)), Math.sin(a) * 0.25 * Math.sign(gl.sp));
-    const glide = Math.sin(t * 0.3 + gl.ph) > 0.2;
-    const flap = glide ? 0.08 : Math.sin(t * 7 + gl.ph) * 0.55;
+    gl.gw = damp(gl.gw || 0, Math.sin(t * 0.3 + gl.ph) > 0.2 ? 1 : 0, 1.5, dt);
+    const fp = t * 7 + gl.ph;
+    const flap = lerp(0.55 * (Math.sin(fp) + 0.22 * Math.sin(2 * fp)), 0.1 + 0.03 * Math.sin(t * 1.3 + gl.ph), gl.gw);
+    gl.g.position.y += (1 - gl.gw) * 0.07 * Math.sin(fp + 1.2);
     gl.L.rotation.z = flap; gl.R.rotation.z = -flap;
   }
 
@@ -2293,16 +2377,17 @@ function updateEnvironment(t, dt) {
     }
   } else if (!shoot.active) shoot.next = t + rand(8, 25);
   if (shoot.active) {
-    shoot.t += dt / 0.9;
+    shoot.t += dt / 1.05;
     if (shoot.t >= 1) { shoot.active = false; shootingStar.visible = false; shoot.next = t + rand(20, 60); }
     else {
       shootingStar.visible = true;
-      shootingStar.position.lerpVectors(shoot.from, shoot.to, shoot.t);
+      const k = 1 - Math.pow(1 - shoot.t, 1.5), flare = smooth(0.62, 0.78, shoot.t) * (1 - smooth(0.82, 0.97, shoot.t));
+      shootingStar.position.lerpVectors(shoot.from, shoot.to, k);
       shootingStar.lookAt(camera.position);
       const a = _v.copy(shoot.from).project(camera), b = _w.copy(shoot.to).project(camera);
       shootingStar.rotateZ(Math.atan2((b.y - a.y), (b.x - a.x) * camera.aspect));
-      shootingStar.scale.set(55, 1.6, 1);
-      shootingStar.material.opacity = Math.sin(Math.PI * shoot.t) * env.night;
+      shootingStar.scale.set(55 * eOutCubic(Math.min(1, shoot.t / 0.3)) * (1 - 0.45 * smooth(0.7, 1, shoot.t)), 1.6 * (1 + 0.7 * flare), 1);
+      shootingStar.material.opacity = smooth(0, 0.08, shoot.t) * (1 - smooth(0.72, 1, shoot.t)) * (1 + 0.6 * flare) * env.night;
     }
   }
 }
@@ -2320,7 +2405,7 @@ function wakeUp(c, t) {
   st.doze = Math.min(st.doze, 0.3);
   st.nextYawn = t + rand(2.2, 3.5);      // a sleepy yawn right after
   st.gazeUntil = 0;
-  bang.c = c; bang.life = 0; bang.s.visible = true;
+  bang.c = c; bang.life = 0; bang.s.visible = true; bang.sp = mkSpring(0);
 }
 
 function startYawn(c, t) {
@@ -2380,49 +2465,89 @@ function gazeTarget(c, t, out) {
 
 function updateCharacter(c, dt, t, mouseActive) {
   const st = c.st, cm = calm(), ta = animT;   // ta = animation clock (runs slower on calm settings)
-  // breathing
-  st.breath += dt * Math.PI * 2 * st.breathRate * cm.speed * (1 - 0.4 * st.doze);
-  const br = Math.sin(st.breath);
-  // blink
-  if (t > st.nextBlink && !st.dozing) { st.blinkStart = t; st.nextBlink = t + (Math.random() < 0.15 * cm.blink ? 0.25 : rand(2.2, 6.5) / cm.blink); }
-  const bp = (t - st.blinkStart) / 0.17;
-  const blink = bp >= 0 && bp < 1 ? Math.sin(Math.PI * bp) : 0;
-  // yawn
+  // Breathing: a quicker in-breath, a slower out-breath and a short pause. Deeper and slower asleep.
+  st.breath += dt * Math.PI * 2 * st.breathRate * cm.speed * (1 - 0.45 * st.doze);
+  const bph = (st.breath / (Math.PI * 2)) % 1;
+  const br = (bph < 0.4 ? eInOutSine(bph / 0.4) : bph < 0.88 ? 1 - eInOutSine((bph - 0.4) / 0.48) : 0) * 2 - 1;
+  const deep = 1 + 0.7 * st.doze;
+  // Now and then a deep sigh: a big breath in, shoulders up, then a little slump
+  if (st.sighStart < 0 && t > st.nextSigh && !st.dozing && st.yawnStart < 0 && st.waveStart < 0) st.sighStart = t;
+  let sigh = 0, slump = 0;
+  if (st.sighStart >= 0) {
+    const p = (t - st.sighStart) / (2.8 / Math.sqrt(cm.speed));
+    if (p >= 1) { st.sighStart = -1; st.nextSigh = t + rand(30, 90) / Math.max(0.3, cm.activity); }
+    else { sigh = p < 0.4 ? eInOutSine(p / 0.4) : 1 - eInOutSine((p - 0.4) / 0.45); slump = p > 0.55 ? Math.sin(Math.PI * (p - 0.55) / 0.45) : 0; }
+  }
+  // Blink: snaps shut, opens a little slower
+  if (t > st.nextBlink && !st.dozing) { st.blinkStart = t; st.nextBlink = t + (Math.random() < 0.15 * cm.blink ? 0.3 : rand(2.2, 6.5) / cm.blink); }
+  const bt = t - st.blinkStart;
+  const blink = bt < 0 ? 0 : bt < 0.055 ? eInCubic(bt / 0.055) : bt < 0.09 ? 1 : bt < 0.24 ? 1 - eOutCubic((bt - 0.09) / 0.15) : 0;
+  // Yawn: a small breath in first, a big stretch, a trembling hold, a slow release and a little shake
   if (st.yawnStart < 0 && t > st.nextYawn && !st.dozing && st.waveStart < 0) startYawn(c, t);
-  let yawn = 0;
+  let yawn = 0, yawnPre = 0, yawnShake = 0;
   if (st.yawnStart >= 0 && t >= st.yawnStart) {
-    const p = (t - st.yawnStart) / (3.4 / Math.sqrt(cm.speed));
+    const p = (t - st.yawnStart) / (3.8 / Math.sqrt(cm.speed));
     if (p >= 1) { st.yawnStart = -1; st.nextYawn = t + rand(35, 95) * (env.night > 0.5 ? 0.7 : 1) / Math.pow(cm.activity, 1.35); }
-    else yawn = bump(p, 0.32, 0.62);
+    else {
+      yawnPre = p < 0.16 ? Math.sin(Math.PI * p / 0.16) : 0;
+      yawn = p < 0.12 ? 0 : p < 0.42 ? eOutCubic((p - 0.12) / 0.3) : p < 0.66 ? 1 + 0.025 * Math.sin(t * 29) : 1 - eInOutSine((p - 0.66) / 0.3);
+      yawnShake = p > 0.8 ? Math.sin((p - 0.8) * 70) * (1 - p) / 0.2 : 0;
+    }
   }
-  // doze
+  // Dozing: the head droops, catches itself once or twice (the classic nod-off), then settles
   st.doze = damp(st.doze, st.dozing ? 1 : 0, st.dozing ? 0.55 : 3.5, dt);
+  let caught = 0;
+  if (st.dozing) {
+    if (st.dozeSince < 0) { st.dozeSince = t; st.catches = [t + rand(2.4, 3.4), t + rand(5, 6.6)]; if (Math.random() < 0.4) st.catches.pop(); }
+    for (const ct of st.catches) { const d = t - ct; if (d > 0 && d < 1.4) caught = Math.max(caught, d < 0.12 ? eOutCubic(d / 0.12) : 1 - eInOutSine((d - 0.12) / 1.28)); }
+  } else st.dozeSince = -1;
   st.startle = Math.max(0, st.startle - dt * 1.6);
-  // wave
-  let wave = 0;
+  const doze = st.doze, dozeHead = doze * (1 - 0.75 * caught);
+  // Wave: the arm swings up with a little overshoot, waves fast then slower, and drops with ease
+  let wave = 0, waveSwing = 0;
   if (st.waveStart >= 0 && t >= st.waveStart) {
-    const p = (t - st.waveStart) / (2.8 / Math.sqrt(cm.speed));
-    if (p >= 1) st.waveStart = -1; else wave = bump(p, 0.18, 0.78);
-  }
-  const doze = st.doze;
-  // waking up after the mouse brushed past: hop, wide eyes, double blink, head shake
+    const p = (t - st.waveStart) / (2.9 / Math.sqrt(cm.speed));
+    if (p >= 1) st.waveStart = -1;
+    else {
+      wave = p < 0.17 ? eOutBack(p / 0.17, 1.4) : p < 0.78 ? 1 : 1 - eInOutSine((p - 0.78) / 0.22);
+      st.wavePh += dt * lerp(10.5, 6.5, p) * Math.sqrt(cm.speed);
+      waveSwing = Math.sin(st.wavePh) * smooth(0.08, 0.2, p) * (1 - smooth(0.7, 0.85, p));
+    }
+  } else st.wavePh = 0;
+  // Waking up after the mouse brushed past: hop, wide eyes, double blink, head shake
   let jolt = 0, wakeP = -1;
   if (st.wakeStart >= 0) {
     wakeP = (t - st.wakeStart) / 1.8;
     if (wakeP >= 1) { st.wakeStart = -1; wakeP = -1; }
     else if (wakeP < 0.28) jolt = Math.sin(Math.PI * wakeP / 0.28);
   }
-  // talking: the snout pulses in little syllables
-  let talk = 0;
+  // Talking: the snout pulses in syllables and the head bobs and tilts along
+  let talk = 0, talkEnv = 0;
   if (!st.dozing && t >= st.talkStart && t < st.talkUntil) {
-    const envT = smooth(st.talkStart, st.talkStart + 0.2, t) * (1 - smooth(st.talkUntil - 0.25, st.talkUntil, t));
-    const syl = Math.max(0, Math.sin(ta * 10.5 + c.seed) * 0.7 + Math.sin(ta * 4.1 + c.seed * 2) * 0.5);
-    talk = envT * Math.min(1, syl);
+    talkEnv = smooth(st.talkStart, st.talkStart + 0.2, t) * (1 - smooth(st.talkUntil - 0.25, st.talkUntil, t));
+    const syl = Math.max(0, Math.sin(ta * 10.5 + c.seed) * 0.7 + Math.sin(ta * 4.1 + c.seed * 2) * 0.5 + noise1(ta * 6 + c.seed) * 0.3);
+    talk = talkEnv * Math.min(1, syl);
   }
-
-  // hop (after a click)
-  let hop = 0;
-  if (st.hopStart >= 0) { const p = (t - st.hopStart) / 0.6; if (p >= 1) st.hopStart = -1; else if (p > 0) hop = Math.sin(Math.PI * p); }
+  // Listening: whoever is being talked to nods along now and then
+  let listen = 0;
+  const other = st.gaze === 'glance' ? st.gazeOther : null;
+  if (other && !st.dozing && t >= other.st.talkStart && t < other.st.talkUntil) {
+    listen = smooth(other.st.talkStart, other.st.talkStart + 0.4, t) * Math.max(0, noise1(ta * 0.9 + c.seed * 5)) * Math.pow(Math.max(0, Math.sin(ta * 6.2 + c.seed)), 2);
+  }
+  // Hop (after a click): crouch, spring up, land with a squash, wobble back into shape
+  let hop = 0, crouch = 0, sqT = 1;
+  if (st.hopStart >= 0) {
+    const p = (t - st.hopStart) / 0.9;
+    if (p >= 1) st.hopStart = -1;
+    else if (p > 0) {
+      if (p < 0.2) { crouch = eInOutSine(p / 0.2); sqT = 0.86; }
+      else if (p < 0.68) { const q = (p - 0.2) / 0.48; hop = 4 * q * (1 - q); crouch = 1 - eOutCubic(Math.min(1, q * 4)); sqT = q < 0.5 ? 1.12 : 1.04; }
+      else if (p < 0.78) { sqT = 0.82; crouch = Math.sin(Math.PI * (p - 0.68) / 0.1) * 0.6; }
+    }
+  }
+  if (jolt > 0) sqT = Math.max(sqT, 1 + 0.1 * jolt);
+  const sq = spring(st.sq, sqT, 3.2, 0.32, dt);
+  c.body.scale.set(1 / Math.sqrt(sq), sq, 1 / Math.sqrt(sq));
 
   // Where to look
   if (t > st.gazeUntil || (st.pendingGlance && st.pendingGlance.at <= t)) pickGaze(c, t);
@@ -2442,32 +2567,46 @@ function updateCharacter(c, dt, t, mouseActive) {
   // target (nearly) straight overhead: face forward and tilt the head right back
   let yaw = clamp(Math.atan2(_loc.x, _loc.z), -1.35, 1.35) * smooth(0.12, 0.7, horiz);
   let pitch = clamp(Math.atan2(_loc.y, horiz), -0.45, 1.25);
-  yaw = lerp(yaw, 0.1 * c.sideToCam, doze);
-  pitch = lerp(pitch, -0.05, doze);
-  st.lookYaw = damp(st.lookYaw, yaw, st.headRate * cm.speed, dt);
-  st.lookPitch = damp(st.lookPitch, pitch, st.headRate * cm.speed, dt);
+  yaw = lerp(yaw, 0.1 * c.sideToCam, dozeHead);
+  pitch = lerp(pitch, -0.05, dozeHead);
+  // The head turns on a spring: it speeds up, overshoots a hair and settles. A big turn brings a blink.
+  if (Math.abs(yaw - st.hY.x) > 0.75 && t - st.lastBigTurn > 1.2 && !st.dozing) { st.lastBigTurn = t; if (t - st.blinkStart > 0.5) st.blinkStart = t + 0.04; }
+  const hf = 0.75 * Math.sqrt(cm.speed) * st.headRate / 3.6;
+  st.lookYaw = spring(st.hY, yaw, hf, 0.78, dt);
+  st.lookPitch = spring(st.hP, pitch, hf * 1.1, 0.8, dt);
 
   // Body
-  c.belly.scale.set(1 + 0.02 * br, 1 + 0.032 * br, 1 + 0.02 * br);
-  c.chestPivot.position.y = 0.42 + 0.014 * br;
-  c.chestPivot.rotation.y = st.lookYaw * 0.28;
-  c.body.position.y = c.bodyY0 + 0.14 * jolt + 0.26 * hop + (c.groove || 0);
-  POSES[c.def.pose].update(c, ta, { yawn, wave, doze, br, jolt });
+  const bs = (0.02 * br + 0.03 * sigh) * deep;
+  c.belly.scale.set(1 + bs, 1 + (0.032 * br + 0.05 * sigh) * deep, 1 + bs);
+  c.chestPivot.position.y = 0.42 + 0.014 * br * deep + 0.035 * sigh - 0.02 * slump;
+  c.chestPivot.rotation.y = spring(st.cY, st.lookYaw * 0.3, 0.45 * Math.sqrt(cm.speed), 0.85, dt);   // the chest follows the head, a beat later
+  c.body.position.y = c.bodyY0 + 0.14 * jolt + 0.3 * hop - 0.07 * crouch + (c.groove || 0);
+  POSES[c.def.pose].update(c, ta, { yawn, yawnPre, wave, waveSwing, doze, br, jolt, sigh, dt, rt: t });
   // sitters wave with the arm on the camera side (the standing pose waves on its own)
   if (wave > 0 && c.def.pose !== 'standing') {
     const i = st.waveSide, s = i ? 1 : -1, L = c.arms[i];
-    _u.copy(L.dirU).lerp(_v.set(s * 0.55, 1, 0.22), wave); _l.copy(L.dirL).lerp(_w.set(s * (0.1 + 0.6 * Math.sin(ta * 9)), 1, 0.12), wave);
+    _u.copy(L.dirU).lerp(_v.set(s * 0.55, 1, 0.22), wave); _l.copy(L.dirL).lerp(_w.set(s * (0.1 + 0.6 * waveSwing), 1, 0.12), wave);
     aimLimb(L, _u, _l);
   }
+  // arms fly up and out a little in the air during a hop
+  if (hop > 0.02) for (let i = 0; i < 2; i++) {
+    const L = c.arms[i], s = i ? 1 : -1;
+    aimLimb(L, _u.copy(L.dirU).lerp(_v.set(s * 0.9, 0.25, 0.1), hop * 0.55), _l.copy(L.dirL).lerp(_w.set(s * 0.5, 0.8, 0.1), hop * 0.5));
+  }
   for (const h of c.hooks) h(c, t, dt);   // props: marshmallow stick, the now-playing sign, dancing
-  // lean back a little when looking high up
-  c.chestPivot.rotation.x = (c.def.pose === 'rockSit' ? 0.08 : 0) - Math.max(0, st.lookPitch - 0.6) * 0.35;
+  // lean back a little when looking high up, puff up on a sigh, slump after it, bend into a crouch
+  c.chestPivot.rotation.x += -Math.max(0, st.lookPitch - 0.6) * 0.35 + 0.06 * slump - 0.04 * sigh + 0.05 * crouch;
 
-  // Head
-  c.head.rotation.y = st.lookYaw * 0.72;
-  c.head.rotation.x = -st.lookPitch + doze * (0.5 + 0.06 * br) - yawn * 0.42 - st.startle * 0.3 + 0.015 * br + talk * 0.05 + st.nod;
+  // Head (with a little wandering of its own, so nobody ever holds perfectly still)
+  const ny = fbm1(ta * 0.17 + c.seed * 3) * 0.05 * (1 - 0.7 * st.mouseW) * (1 - doze);
+  const np = fbm1(ta * 0.19 + c.seed * 5) * 0.03 * (1 - doze);
+  c.head.rotation.y = st.lookYaw * 0.72 + ny;
+  c.head.rotation.x = -st.lookPitch + dozeHead * (0.5 + 0.08 * br) - yawn * 0.42 + yawnPre * 0.1 - st.startle * 0.3 + 0.015 * br
+    + talk * 0.07 + st.nod + listen * 0.09 - sigh * 0.1 + slump * 0.08 + np;
   const shake = (wakeP > 0.3 && wakeP < 0.75) ? 0.14 * Math.sin((wakeP - 0.3) * 40) * (0.75 - wakeP) * 2.2 : 0;
-  c.head.rotation.z = doze * 0.18 * c.sideToCam + Math.sin(ta * 0.37 + c.seed) * 0.03 + shake;
+  const ws = st.waveSide ? 1 : -1;
+  c.head.rotation.z = dozeHead * 0.18 * c.sideToCam + fbm1(ta * 0.23 + c.seed) * 0.05 + shake + yawnShake * 0.06
+    + talkEnv * 0.05 * noise1(ta * 0.9 + c.seed * 2) - ws * 0.09 * Math.min(1, wave) + (st.danceTilt || 0);
 
   // Snout (the mouth) swells while yawning or talking, never opens
   const grow = Math.max(yawn, talk * 0.55, c.blow || 0);
@@ -2478,14 +2617,18 @@ function updateCharacter(c, dt, t, mouseActive) {
   c.blurMat.opacity = doze;
   const wbl = wakeP >= 0 ? Math.max(0, 1 - Math.abs(wakeP - 0.5) / 0.04, 1 - Math.abs(wakeP - 0.62) / 0.04) : 0;
   const wide = wakeP >= 0 ? 1 + 0.35 * Math.max(0, 1 - wakeP * 2.2) : 1;
-  const lidY = Math.max(0.06, Math.min(1 - 0.94 * blink, 1 - 0.94 * wbl, 1 - 0.72 * yawn, 1 - 0.5 * doze) * wide);
+  const lookDown = clamp(-st.lookPitch, 0, 0.45);   // lids follow the eyes down a little
+  const lidY = Math.max(0.06, Math.min(1 - 0.94 * blink, 1 - 0.94 * wbl, 1 - 0.72 * yawn, 1 - 0.5 * dozeHead, 1 - 0.45 * lookDown) * wide);
+  // Eyes jump between targets (saccades) and flick slightly while holding still, ahead of the head
+  if (t > st.sacNext) { st.sacNext = t + rand(0.35, 1.6); st.microX = rand(-1, 1) * 0.006; st.microY = rand(-1, 1) * 0.005; }
   for (const e of c.eyes) {
     e.group.worldToLocal(_e.copy(_look)).normalize();
     let ox = _e.x, oy = _e.y;
-    const L = Math.hypot(ox, oy), m = 0.046;
-    if (L > 1e-4) { const k = Math.min(1, L * 1.4) * m / L; ox *= k; oy *= k; }
-    ox *= 1 - 0.8 * doze; oy = oy * (1 - doze) - 0.02 * doze;
-    const er = 14 * Math.sqrt(cm.speed); e.ox = damp(e.ox, ox, er, dt); e.oy = damp(e.oy, oy, er, dt);
+    const len = Math.hypot(ox, oy), m = 0.046;
+    if (len > 1e-4) { const k = Math.min(1, len * 1.4) * m / len; ox *= k; oy *= k; }
+    ox = ox * (1 - 0.8 * doze) + st.microX * (1 - doze); oy = oy * (1 - doze) - 0.02 * doze + st.microY * (1 - doze);
+    if (e.tx === undefined || Math.hypot(ox - e.tx, oy - e.ty) > 0.011 || doze > 0.5) { e.tx = ox; e.ty = oy; }
+    const er = 38 * Math.sqrt(cm.speed); e.ox = damp(e.ox, e.tx, er, dt); e.oy = damp(e.oy, e.ty, er, dt);
     e.pupil.position.x = e.ox; e.pupil.position.y = e.oy;
     e.lid.scale.y = lidY;
   }
@@ -2563,9 +2706,10 @@ function updateCharacters(dt, t) {
     else {
       bang.c.skull.getWorldPosition(_hw);
       const sc = bang.c.def.scale, L = bang.life;
-      const pop = L < 0.15 ? (L / 0.15) * 1.3 : 1.3 - Math.min(0.3, (L - 0.15) * 1.5);
-      bang.s.position.set(_hw.x, _hw.y + (0.55 + L * 0.15) * sc, _hw.z);
+      const pop = Math.max(0, spring(bang.sp, L < 1.0 ? 1 : 0.7, 3.4, 0.28, dt));
+      bang.s.position.set(_hw.x, _hw.y + (0.55 + 0.22 * eOutCubic(Math.min(1, L / 0.5))) * sc, _hw.z);
       bang.s.scale.setScalar(0.42 * sc * pop);
+      bang.s.material.rotation = 0.35 * Math.sin(L * 16) * Math.exp(-L * 3.5);
       bang.s.material.opacity = 1 - smooth(0.9, 1.3, L);
     }
   }
@@ -2575,24 +2719,26 @@ function updateCharacters(dt, t) {
   if (dozer && S.SHOW_ZZZ) {
     zzzTimer -= dt;
     if (zzzTimer <= 0) {
-      zzzTimer = 1.15;
+      zzzTimer = rand(0.95, 1.45);
       const z = zzz.find((q) => !q.s.visible);
       if (z) {
         dozer.skull.getWorldPosition(_hw);
         const sc = dozer.def.scale;
         z.s.position.set(_hw.x + 0.18 * sc, _hw.y + 0.38 * sc, _hw.z + 0.1);
-        z.x0 = z.s.position.x; z.life = 0; z.ph = Math.random() * 6; z.sc = sc; z.s.visible = true;
+        z.x0 = z.s.position.x; z.y0 = z.s.position.y; z.life = 0; z.ph = Math.random() * 6; z.sc = sc; z.k = rand(0.8, 1.15); z.rot = rand(-0.3, 0.3); z.s.visible = true;
       }
     }
   }
   for (const z of zzz) {
     if (!z.s.visible) continue;
     z.life += dt;
-    if (z.life > 3.2) { z.s.visible = false; continue; }
-    z.s.position.y += 0.3 * dt;
-    z.s.position.x = z.x0 + Math.sin(z.life * 2.2 + z.ph) * 0.12 + z.life * 0.12;
-    z.s.scale.setScalar((0.3 + z.life * 0.11) * z.sc);
-    z.s.material.opacity = Math.min(1, z.life * 3) * (1 - z.life / 3.2);
+    if (z.life > 3.4) { z.s.visible = false; continue; }
+    const L = z.life, rise = eOutCubic(Math.min(1, L / 3.4));
+    z.s.position.y = z.y0 + rise * 1.05;
+    z.s.position.x = z.x0 + Math.sin(L * 2.0 + z.ph) * 0.1 * Math.min(1, L) + rise * 0.4;
+    z.s.scale.setScalar((0.28 + L * 0.1) * z.sc * (z.k || 1) * (L < 0.35 ? eOutBack(L / 0.35, 2) : 1));
+    z.s.material.rotation = (z.rot || 0) + 0.25 * Math.sin(L * 1.6 + z.ph);
+    z.s.material.opacity = Math.min(1, L * 4) * (1 - smooth(2.4, 3.4, L));
   }
 }
 
@@ -2889,7 +3035,8 @@ function resize() {
   // Sizing the camera to that makes its maths invalid and only the sky colour gets drawn, so keep the last good size.
   if (!(w >= 2 && h >= 2)) return;
   viewW = w; viewH = h;
-  const pr = Math.min(window.devicePixelRatio || 1, GFX.maxPixelRatio) * CFG.scale;
+  const maxPR = (WALLPAPER || IN_APP) && GFX.level >= 1 ? clamp(S.PHONE_RESOLUTION, 0.75, 3) : GFX.maxPixelRatio;
+  const pr = Math.min(window.devicePixelRatio || 1, maxPR) * CFG.scale;
   renderer.setPixelRatio(pr);
   renderer.setSize(w, h, false);
   camera.aspect = w / h;
@@ -2909,7 +3056,7 @@ function resize() {
   fireflies.u.uPixelRatio.value = pr * viewH / 1440;
 }
 // Camera position, plus a gentle drift toward the mouse (CAMERA_DRIFT) for a bit of parallax.
-const drift = { x: 0, y: 0 };
+const drift = { x: 0, y: 0 }, driftS = { x: mkSpring(), y: mkSpring() };
 // Phone tilt from the Android app (−1…1 each way, relative to how you usually hold it).
 const tilt = { x: 0, y: 0, tx: 0, ty: 0 };
 window.__tilt = (x, y) => { tilt.tx = clamp(+x || 0, -1, 1); tilt.ty = clamp(+y || 0, -1, 1); };
@@ -2974,11 +3121,12 @@ let frames = 0, statsT = performance.now();
 
 let simTime = 0, rafId = 0, lastFrame = 0, running = false;
 // Frame-rate cap: MAX_FPS while the mouse moves or music plays, IDLE_FPS once things are still.
+let sentFps = 0;
 function currentFps() {
   let cap = Q.has('maxfps') ? CFG.fps : S.MAX_FPS, idle = S.IDLE_FPS;
-  if (WALLPAPER) {   // phone wallpaper: 30 fps at most, 24 when still, 15 on low battery
-    const top = lowBattery ? 15 : 30;
-    cap = Math.min(cap > 0 ? cap : top, top); idle = Math.min(idle > 0 ? idle : 24, lowBattery ? 15 : 24);
+  if (WALLPAPER || IN_APP) {   // phone app and wallpaper: their own frame rate (Phone tab), 15 on low battery
+    cap = idle = lowBattery && S.PHONE_BATTERY_SAVER ? 15 : clamp(Math.round(S.PHONE_FPS), 10, 120);
+    if (cap !== sentFps && window.CozyApp) { sentFps = cap; try { window.CozyApp.frameRate(cap); } catch {} }   // lets Android run the screen that fast
   }
   const busy = performance.now() - lastInput < 3000 || music.playing || env.fireBoost > 0;
   if (busy || !(idle > 0)) return cap;
@@ -2999,7 +3147,7 @@ function frame(now) {
   if (!viewW) return;
   simTime += dt;
   const moving = performance.now() - lastInput < 6000;
-  drift.x = damp(drift.x, moving ? ptr.x : 0, moving ? 1.2 : 0.3, dt); drift.y = damp(drift.y, moving ? ptr.y : 0, moving ? 1.2 : 0.3, dt);
+  drift.x = spring(driftS.x, moving ? ptr.x : 0, moving ? 0.32 : 0.12, 0.95, dt); drift.y = spring(driftS.y, moving ? ptr.y : 0, moving ? 0.32 : 0.12, 0.95, dt);
   tilt.x = damp(tilt.x, tilt.tx, 4, dt); tilt.y = damp(tilt.y, tilt.ty, 4, dt);
   if (S.CAMERA_DRIFT > 0 || Math.abs(drift.x) > 1e-4 || S.TILT_PARALLAX > 0) aimCamera();
   updateEnvironment(simTime, dt);
@@ -3116,6 +3264,9 @@ const PANEL_GROUPS = [
     { k: 'CHARACTER_COUNT', label: 'Characters (reloads)', min: 1, max: 4, step: 1, reload: true },
     { k: 'TILT_PARALLAX', label: 'Tilt the phone to look around (app)', min: 0, max: 2, step: 0.1 },
     { k: 'NIGHT_SKY_DARK', label: 'Darker night sky (saves battery)', min: 0, max: 1, step: 0.05 },
+    { k: 'PHONE_FPS', label: 'Frame rate (app)', min: 15, max: 120, step: 5 },
+    { k: 'PHONE_RESOLUTION', label: 'Sharpness (app)', min: 1, max: 3, step: 0.25 },
+    { k: 'PHONE_BATTERY_SAVER', label: '15 fps when the battery is low (app)' },
   ]],
   ['Effects', [
     { k: 'COLOR_GRADE', label: 'Colour grade', options: [['natural', 'Natural'], ['film', 'Film'], ['golden', 'Golden'], ['pastel', 'Pastel'], ['moody', 'Moody'], ['vivid', 'Vivid']] },
@@ -3185,7 +3336,7 @@ function saveSettings() {
   try { localStorage.setItem('beachSettings', JSON.stringify(diff)); } catch {}
 }
 function liveApply(k) {
-  if (k === 'CAMERA_ZOOM' || k === 'CAMERA_HEIGHT' || k === 'CAMERA_DRIFT' || k.startsWith('TALL_')) resize();
+  if (k === 'CAMERA_ZOOM' || k === 'CAMERA_HEIGHT' || k === 'CAMERA_DRIFT' || k.startsWith('TALL_') || k === 'PHONE_RESOLUTION') resize();
   if (k === 'SHOW_FPS') statsEl.style.display = S.SHOW_FPS ? 'block' : 'none';
   if (k === 'CHARACTER_COLORS') characters.forEach(paintCharacter);
   if (k === 'WEATHER_MODE' || k === 'WEATHER_LAT' || k === 'WEATHER_LON') fetchWeather();

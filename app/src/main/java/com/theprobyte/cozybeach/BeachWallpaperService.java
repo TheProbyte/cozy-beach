@@ -7,11 +7,16 @@ import android.graphics.Paint;
 import android.graphics.PixelFormat;
 import android.hardware.display.DisplayManager;
 import android.hardware.display.VirtualDisplay;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.service.wallpaper.WallpaperService;
 import android.util.Log;
+import android.view.Display;
 import android.view.MotionEvent;
+import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.ViewGroup;
 import android.view.WindowManager;
@@ -30,6 +35,45 @@ public class BeachWallpaperService extends WallpaperService {
         return new BeachEngine();
     }
 
+    /** The screen's fastest refresh rate (120 Hz on a Pixel 10 Pro XL). */
+    private float maxRefreshRate() {
+        float hz = 60f;
+        try {
+            Display d = getSystemService(DisplayManager.class).getDisplay(Display.DEFAULT_DISPLAY);
+            for (Display.Mode m : d.getSupportedModes()) hz = Math.max(hz, m.getRefreshRate());
+        } catch (RuntimeException ignored) { }
+        return hz;
+    }
+
+    /**
+     * The private display the page draws into. On Android 14+ it is asked to run at the screen's full
+     * refresh rate (otherwise virtual displays tick at 60). Done by reflection so it builds against
+     * any SDK and quietly falls back to the plain version.
+     */
+    private VirtualDisplay createDisplay(DisplayManager dm, int w, int h, int dpi, Surface surface) {
+        float hz = maxRefreshRate();
+        if (Build.VERSION.SDK_INT >= 34 && hz > 61f) {
+            try {
+                Class<?> builder = Class.forName("android.hardware.display.VirtualDisplayConfig$Builder");
+                Object b = builder.getConstructor(String.class, int.class, int.class, int.class).newInstance("CozyBeach", w, h, dpi);
+                builder.getMethod("setSurface", Surface.class).invoke(b, surface);
+                builder.getMethod("setRequestedRefreshRate", float.class).invoke(b, hz);
+                Object config = builder.getMethod("build").invoke(b);
+                for (java.lang.reflect.Method m : DisplayManager.class.getMethods()) {
+                    Class<?>[] p = m.getParameterTypes();
+                    if (m.getName().equals("createVirtualDisplay") && p.length == 3 && p[0].getName().equals("android.hardware.display.VirtualDisplayConfig")) {
+                        Object vd = m.invoke(dm, config, null, null);
+                        if (vd instanceof VirtualDisplay) return (VirtualDisplay) vd;
+                    }
+                }
+            } catch (ReflectiveOperationException | RuntimeException e) {
+                Log.w(TAG, "High refresh rate display not available, using 60 Hz", e);
+            }
+        }
+        // Flags 0 = a private display only this app can put windows on.
+        return dm.createVirtualDisplay("CozyBeach", w, h, dpi, surface, 0);
+    }
+
     private class BeachEngine extends Engine {
         private VirtualDisplay display;
         private Context windowContext;
@@ -37,6 +81,8 @@ public class BeachWallpaperService extends WallpaperService {
         private long lastTouch;
         private NowPlaying nowPlaying;
         private Tilt tilt;
+        private final Handler main = new Handler(Looper.getMainLooper());
+        private float frameRate = 60f;
 
         @Override
         public void onCreate(SurfaceHolder holder) {
@@ -52,17 +98,18 @@ public class BeachWallpaperService extends WallpaperService {
             if (display != null) {
                 display.setSurface(holder.getSurface());
                 display.resize(width, height, dpi);
+                applyFrameRate();
                 return;
             }
             try {
                 DisplayManager dm = getSystemService(DisplayManager.class);
-                // Flags 0 = a private display only this app can put windows on.
-                display = dm.createVirtualDisplay("CozyBeach", width, height, dpi, holder.getSurface(), 0);
+                display = createDisplay(dm, width, height, dpi, holder.getSurface());
                 Context displayContext = createDisplayContext(display.getDisplay());
                 windowContext = displayContext.createWindowContext(WindowManager.LayoutParams.TYPE_PRIVATE_PRESENTATION, null);
                 web = BeachWeb.create(windowContext, () -> BeachWeb.sendTrack(web, nowPlaying.current()));
                 nowPlaying = new NowPlaying(BeachWallpaperService.this, (json) -> BeachWeb.sendTrack(web, json));
                 tilt = new Tilt(BeachWallpaperService.this, (x, y) -> BeachWeb.sendTilt(web, x, y));
+                BeachWeb.bridge(web, (fps) -> main.post(() -> { frameRate = fps; applyFrameRate(); }));
                 WindowManager.LayoutParams lp = new WindowManager.LayoutParams(
                         ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT,
                         WindowManager.LayoutParams.TYPE_PRIVATE_PRESENTATION,
@@ -123,6 +170,14 @@ public class BeachWallpaperService extends WallpaperService {
         public void onDestroy() {
             cleanUp();
             super.onDestroy();
+        }
+
+        /** Ask Android to run the screen at the page's frame rate (e.g. 120 Hz), so it isn't held at 60. */
+        private void applyFrameRate() {
+            try {
+                Surface s = getSurfaceHolder().getSurface();
+                if (s != null && s.isValid()) s.setFrameRate(frameRate, Surface.FRAME_RATE_COMPATIBILITY_DEFAULT);
+            } catch (RuntimeException ignored) { }
         }
 
         /** Song info and tilt only while the wallpaper can be seen (saves battery). */

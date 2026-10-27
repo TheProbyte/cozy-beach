@@ -77,6 +77,16 @@ final class BeachWeb {
         return web;
     }
 
+    interface FrameRate { void set(float fps); }
+
+    /** Lets the page ask for a frame rate (its Phone → Frame rate setting). Called on a background thread. */
+    static void bridge(WebView web, FrameRate listener) {
+        web.addJavascriptInterface(new Object() {
+            @android.webkit.JavascriptInterface
+            public void frameRate(float fps) { listener.set(fps); }
+        }, "CozyApp");
+    }
+
     /** Tell the page what's playing (Lively's format), or that nothing is (null). */
     static void sendTrack(WebView web, String json) {
         if (web == null) return;

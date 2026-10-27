@@ -40,6 +40,12 @@ public class MainActivity extends Activity {
         web = BeachWeb.create(this, () -> BeachWeb.sendTrack(web, nowPlaying.current()));
         nowPlaying = new NowPlaying(this, (json) -> BeachWeb.sendTrack(web, json));
         tilt = new Tilt(this, (x, y) -> BeachWeb.sendTilt(web, x, y));
+        BeachWeb.bridge(web, (fps) -> runOnUiThread(() -> {
+            // let the screen run as fast as the page wants (up to 120 Hz)
+            android.view.WindowManager.LayoutParams a = getWindow().getAttributes();
+            a.preferredRefreshRate = fps;
+            getWindow().setAttributes(a);
+        }));
         root.addView(web, new FrameLayout.LayoutParams(FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
 
         LinearLayout buttons = new LinearLayout(this);
