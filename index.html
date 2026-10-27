@@ -117,14 +117,14 @@ const IDLE_TIME          = 0.6;         // custom: share of the time they just r
 const BLINK_RATE         = 0.55;        // custom: how often they blink. 1 = original
 
 // ---- Scenes: a different place for each day of the week ---------------------------------
-const SCENE              = 'auto';      // 'auto' = follow the days below, or always the same one: 'beach', 'lake', 'cabin', 'meadow'
-const SCENE_SUNDAY       = 'beach';     // beach, lake (mountain lake dock), cabin (snowy cabin porch) or meadow (hilltop meadow)
+const SCENE              = 'auto';      // 'auto' = follow the days below, or always the same one: 'beach', 'lake', 'cabin', 'meadow', 'jungle', 'train', 'boat'
+const SCENE_SUNDAY       = 'beach';     // beach, lake (mountain lake dock), cabin (snowy cabin porch), meadow (hilltop meadow)
 const SCENE_MONDAY       = 'lake';
 const SCENE_TUESDAY      = 'cabin';
 const SCENE_WEDNESDAY    = 'meadow';
-const SCENE_THURSDAY     = 'lake';      // Thursday to Saturday repeat the new scenes for now
-const SCENE_FRIDAY       = 'cabin';
-const SCENE_SATURDAY     = 'meadow';
+const SCENE_THURSDAY     = 'jungle';    // jungle (jungle waterfall)
+const SCENE_FRIDAY       = 'train';     // train (old train platform)
+const SCENE_SATURDAY     = 'boat';      // boat (sailboat at sea)
 
 // ---- Mouse --------------------------------------------------------------------------
 const MOUSE_FOLLOW       = true;        // heads and eyes follow the cursor
@@ -242,7 +242,7 @@ const SHOW_FPS           = false;       // small FPS counter in the corner (or a
 //   ?mouseover=0..3 (park the cursor above a character)   ?calm=lively|calm|sleepy   ?settings (open the ⚙ panel)
 //   ?weather=rain|storm|fog|heat|cloudy|clear   ?nowplaying=Song|Artist (pretend music is playing)   ?moon=0..1 (moon phase)
 //   ?wallpaper  phone live-wallpaper mode: no ⚙ gear on a tap (tap three times quickly to show it)
-//   ?scene=beach|lake|cabin|meadow  show that scene whatever the day
+//   ?scene=beach|lake|cabin|meadow|jungle|train|boat  show that scene whatever the day
 
 // =====================================================================
 
@@ -335,7 +335,7 @@ const CFG = {   // values fixed at load time
 };
 
 // Today's scene: SCENE, or the one set for today's weekday.
-const SCENE_IDS = ['beach', 'lake', 'cabin', 'meadow'];
+const SCENE_IDS = ['beach', 'lake', 'cabin', 'meadow', 'jungle', 'train', 'boat'];
 const DAY_KEYS = ['SCENE_SUNDAY', 'SCENE_MONDAY', 'SCENE_TUESDAY', 'SCENE_WEDNESDAY', 'SCENE_THURSDAY', 'SCENE_FRIDAY', 'SCENE_SATURDAY'];
 const DAY_NAMES = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 function pickScene(date = new Date()) {
@@ -348,7 +348,18 @@ function switchScene() {
   if (switchScene.busy) return; switchScene.busy = true;
   try { sessionStorage.setItem('beachFadeIn', '1'); } catch {}
   const f = document.getElementById('fade'); if (f) f.style.opacity = '1';
-  setTimeout(() => location.reload(), 1100);
+  reloadPage(1100);
+}
+// Reload the page (a new scene, changed settings). The Android app reloads natively. If nothing has happened
+// a few seconds later (e.g. an older app that blocked reloads), lift the dark fade instead of staying dark.
+function reloadPage(delay = 0) {
+  setTimeout(() => {
+    try { if (window.CozyApp && window.CozyApp.reload) window.CozyApp.reload(); else location.reload(); } catch { location.reload(); }
+    setTimeout(() => {
+      const f = document.getElementById('fade'); if (f) { f.style.transition = 'opacity 0.8s ease'; f.style.opacity = '0'; }
+      switchScene.busy = false;
+    }, 4000);
+  }, delay);
 }
 
 // Calm presets: speed = how fast they move, activity = how often they do things,
@@ -636,16 +647,104 @@ function meadowHeight(x, z) {
   return h;
 }
 
+
+// Jungle waterfall: a pool below a horseshoe of cliffs; the waterfall pours in at the back.
+const POOL_E = { cz: -18, rx: 26, rz: 17 };
+const poolDist = (x, z) => (Math.hypot(x / POOL_E.rx, (z - POOL_E.cz) / POOL_E.rz) - 1) * POOL_E.rz;   // ~metres from the pool's edge
+const FALL = { x: -10.5 };   // between Pip and Mo, so nobody stands in front of it
+function jungleHeight(x, z) {
+  const d = poolDist(x, z);
+  let h;
+  if (d < 0) h = Math.max(-3.5, d * 0.14);
+  else {
+    const cliff = Math.max(smooth(-4, -14, z), 0.6 * smooth(16, 30, Math.abs(x)));
+    const nearFall = Math.exp(-(((x - FALL.x) / 3) ** 2));
+    h = 0.02 * Math.min(d, 6) + cliff * (7.5 * smooth(0.6, 4.0, d) + Math.min(0.008 * d * d, 3));
+    h -= cliff * 1.8 * Math.exp(-(((x - FALL.x) / 2.6) ** 2)) * smooth(2, 5, d);                     // the notch the water pours through
+    h += cliff * smooth(1, 4, d) * (1 - nearFall) * (0.6 * Math.sin(x * 0.7 + z * 0.3) + 0.4 * Math.sin(x * 1.7 - z * 1.1) + 0.35 * Math.sin(z * 2.3));   // rocky ledges
+    h += smooth(20, 80, d) * (5 * Math.sin(x * 0.04 + 0.3) * Math.sin(z * 0.035 + 1.1) + 3 * Math.sin(x * 0.09 - z * 0.06)) + smooth(60, 260, Math.hypot(x, z)) * 10;
+  }
+  h += (0.08 * Math.sin(x * 0.37 + 0.8) * Math.sin(z * 0.45 + 1.1) + 0.04 * Math.sin(x * 1.1 + z * 0.8)) * (1 - smooth(-8, -16, z));
+  h += Math.max(0, z - 6) * 0.04;
+  return h;
+}
+const POOL_GLSL = /* glsl */`
+float sandHeight(vec2 p){
+  float d = (length(vec2(p.x / ${POOL_E.rx.toFixed(1)}, (p.y - (${POOL_E.cz.toFixed(1)})) / ${POOL_E.rz.toFixed(1)})) - 1.0) * ${POOL_E.rz.toFixed(1)};
+  float h = d < 0.0 ? max(-3.5, d * 0.14) : 0.02 * min(d, 6.0);
+  h += (0.08 * sin(p.x * 0.37 + 0.8) * sin(p.y * 0.45 + 1.1) + 0.04 * sin(p.x * 1.1 + p.y * 0.8)) * (1.0 - smoothstep(-8.0, -16.0, p.y));
+  h += max(0.0, p.y - 6.0) * 0.04;
+  return h;
+}`;
+// where the waterfall meets the pool: the back edge of the water behind FALL.x
+FALL.zBot = (() => { let z = -28; while (z > -45 && jungleHeight(FALL.x, z) < -0.3) z -= 0.05; return z; })();
+FALL.zTop = (() => {   // the cliff's lip: where it gets to 95% of its height within 12 m behind the water
+  let top = -9; for (let z = FALL.zBot; z > FALL.zBot - 12; z -= 0.1) top = Math.max(top, jungleHeight(FALL.x, z));
+  let z = FALL.zBot; while (z > FALL.zBot - 12 && jungleHeight(FALL.x, z) < top * 0.95) z -= 0.1;
+  return z;
+})();
+FALL.top = jungleHeight(FALL.x, FALL.zTop);
+const FALL_RINGS_GLSL = `{ float r = length((vWorld.xz - vec2(${FALL.x.toFixed(2)}, ${(FALL.zBot + 0.4).toFixed(2)})) * vec2(0.8, 1.4));
+          rings = max(rings, 2.0 * (1.0 - smoothstep(0.6, 3.2, r)) * (0.8 + 0.2 * sin(uTime * 9.0 + vWorld.x * 4.0))
+                           + smoothstep(0.65, 0.97, sin(r * 3.5 - uTime * 3.2)) * (1.0 - smoothstep(2.0, 10.0, r)) * 0.9); }`;
+
+// Old train platform: a stone platform the characters sit on, the track behind it, fields and a village beyond.
+const PLAT = { x0: -26, x1: 26, z0: -2.7, z1: 4.6, y: 0 };
+const TRACK_Z = -4.3;
+const TRAIN_HILLS = [[-70, -175, 13, 45], [95, -230, 11, 60], [-210, -140, 16, 70], [230, -170, 14, 80]];
+function trainGround(x, z) {
+  let h = -0.62 + 0.06 * Math.sin(x * 0.4 + 1.1) * Math.sin(z * 0.5) + 0.03 * Math.sin(x * 1.3 + z);
+  h = lerp(h, -0.8, Math.exp(-(((z - TRACK_Z) / 1.9) ** 2)));   // the ballast bed under the track
+  h += smooth(-9, -60, z) * 1.5 + smooth(-60, -320, z) * (16 + 7 * Math.sin(x * 0.013 + 0.6) + 4 * Math.sin(x * 0.031 - z * 0.012));
+  for (const [px, pz, ph, pr] of TRAIN_HILLS) h += ph * Math.exp(-((x - px) ** 2 + (z - pz) ** 2) / (pr * pr));
+  h += Math.max(0, z - 7) * 0.03;
+  return h;
+}
+const onPlatform = (x, z) => x > PLAT.x0 && x < PLAT.x1 && z > PLAT.z0 && z < PLAT.z1;
+const trainHeight = (x, z) => (onPlatform(x, z) ? PLAT.y : trainGround(x, z));
+
+// Sailboat at sea: a little catamaran at anchor; its deck is the ground, the open sea all round.
+const HULL = { cx: 0, cz: 0.6, hx: 7.8, hz: 3.0, deck: 0.32 };
+const onDeck = (x, z) => Math.abs(x - HULL.cx) < HULL.hx && Math.abs(z - HULL.cz) < HULL.hz;
+const boatHeight = (x, z) => (onDeck(x, z) ? HULL.deck : -30);
+const BOAT_GLSL = 'float sandHeight(vec2 p){ return -30.0; }';
+// foam where the hulls meet the water, and little ripples spreading from them
+const HULL_FOAM_GLSL = `{ vec2 q = vWorld.xz - vec2(${HULL.cx.toFixed(2)}, ${HULL.cz.toFixed(2)}); vec2 dd = abs(q) - vec2(${(HULL.hx - 0.2).toFixed(2)}, ${(HULL.hz + 0.15).toFixed(2)});
+          float hd = length(max(dd, 0.0)) + min(max(dd.x, dd.y), 0.0);
+          rings = max(rings, (1.0 - smoothstep(0.0, 0.35, hd)) * (0.55 + 0.35 * sin(uTime * 2.3 + q.x * 1.7))
+                           + smoothstep(0.75, 0.97, sin(hd * 4.5 - uTime * 1.6)) * (1.0 - smoothstep(0.3, 3.0, hd)) * 0.5); }`;
+// distant islands (one with a lighthouse); same format as the beach's ISLAND_GROUPS
+const BOAT_ISLANDS = [
+  { x: -165, z: -400, base: -1.5, flatTop: false, parts: [[0, 0, 30, 15, 24, '#7b8a6a'], [-25, 7, 20, 9, 17, '#6f7e60'], [22, -4, 15, 7, 13, '#857f70']] },
+  { x: 240, z: -520, base: -1.2, flatTop: true, parts: [[0, 0, 20, 7, 15, '#857c6c'], [15, 6, 11, 4, 9, '#8f8574']] },
+];
+const BOAT_SHORES = BOAT_ISLANDS.flatMap((g) => g.parts.map(([dx, dz, w, h, d]) => {
+  const yu = 2 * (-g.base) / (h + 0.3) - 1, r = Math.sqrt(Math.max(0.05, 1 - yu * yu));
+  return { x: g.x + dx, z: g.z + dz, rx: w * r * SHELF, rz: d * r * SHELF };
+}));
+const BOAT_ISLAND_GLSL = `float islandField(vec2 p){
+  float d = 99.0;
+  ${BOAT_SHORES.map((e) => `d = min(d, length((p - vec2(${e.x.toFixed(1)}, ${e.z.toFixed(1)})) / vec2(${e.rx.toFixed(2)}, ${e.rz.toFixed(2)})));`).join(' ')}
+  return d;
+}`;
+
 // name: shown in the ⚙ panel. water: 'ocean', 'lake' or none. groundTint: colour of light bouncing off the ground.
 // precip: 'snow' turns rain into snow. fireflies: how many show on warm nights (0 = none).
 const SCENE_DEFS = {
-  beach:  { name: 'Beach', water: 'ocean', height: beachHeight, glsl: BEACH_GLSL, blob: '#24180c' },
-  lake:   { name: 'Mountain lake dock', water: 'lake', height: lakeHeight, glsl: LAKE_GLSL, blob: '#1f1a12', fogFar: 1000,
+  beach:  { name: 'Beach', water: 'ocean', height: beachHeight, glsl: BEACH_GLSL, blob: '#24180c', islands: ISLAND_GLSL },
+  lake:   { name: 'Mountain lake dock', water: 'lake', height: lakeHeight, glsl: LAKE_GLSL, rings: DOCK_RINGS_GLSL, blob: '#1f1a12', fogFar: 1000,
             groundTint: [0.8, 1.0, 0.72], waterDeep: [0.36, 0.66, 0.58], waterShallow: [0.55, 0.76, 0.64] },
   cabin:  { name: 'Snowy cabin porch', water: null, height: cabinHeight, blob: '#3c4a66', fogFar: 900, groundTint: [1.25, 1.3, 1.45], precip: 'snow', fireflies: 0, warm: -0.04 },
   meadow: { name: 'Hilltop meadow', water: null, height: meadowHeight, blob: '#1c240f', fogFar: 1100, groundTint: [0.78, 1.02, 0.62], fireflies: 1.5 },
+  jungle: { name: 'Jungle waterfall', water: 'lake', height: jungleHeight, glsl: POOL_GLSL, rings: FALL_RINGS_GLSL, blob: '#1a2110', fogFar: 800,
+            groundTint: [0.72, 1.0, 0.66], waterDeep: [0.22, 0.62, 0.58], waterShallow: [0.42, 0.9, 0.76], fireflies: 1.6 },
+  train:  { name: 'Old train platform', water: null, height: trainHeight, blob: '#1e1a16', fogFar: 1000, groundTint: [0.85, 0.98, 0.75], fireflies: 0.8,
+            treeSpot: (x, z) => [x, Math.min(z, -8.4)] },
+  boat:   { name: 'Sailboat at sea', water: 'ocean', openSea: true, height: boatHeight, glsl: BOAT_GLSL, islands: BOAT_ISLAND_GLSL, rings: HULL_FOAM_GLSL,
+            blob: '#1c1c22', fireflies: 0, groundTint: [0.85, 0.95, 1.1] },
 };
 SCENE_DEFS.cabin.treeSpot = (x, z) => (inDeck(x, z) || inCabin(x, z) ? [Math.sign(x || 1) * (DECK.x1 + 0.9), z] : [x, z]);
+SCENE_DEFS.lake.treePad = 1.4;   // pines are wide at the bottom: stand them clear of the characters
 SCENE_DEFS.lake.treeSpot = (x, z) => (Math.abs(x - DOCK.x) < DOCK.w / 2 + 0.9 && z < DOCK.z0 + 0.6 ? [DOCK.x - DOCK.w / 2 - 1.0, z] : [x, z]);
 const PLACE = SCENE_DEFS[SCENE_ID];
 const sandHeight = PLACE.height;          // ground height under everything (the name is from when there was only sand)
@@ -742,7 +841,7 @@ if (PLACE.water) {   // the sea (beach) or the lake
     const u = p.getX(i), v = p.getZ(i);          // both -1..1
     const t = (1 - v) / 2;                          // 0 near shore .. 1 far
     const X = Math.sign(u) * Math.pow(Math.abs(u), 2.2) * 900;
-    const Z = -2.5 - t * t * 760;
+    const Z = PLACE.openSea ? 60 - t * t * 820 : -2.5 - t * t * 760;   // out at sea it surrounds the boat
     p.setXYZ(i, X, 0, Z);
   }
   const ringAt = (q) => `length(vWorld.xz - vec2(${q.x.toFixed(2)}, ${q.z.toFixed(2)}))`;
@@ -753,6 +852,7 @@ if (PLACE.water) {   // the sea (beach) or the lake
     uniforms: waterUniforms,
     vertexShader: /* glsl */`
       ${PLACE.water === 'lake' ? '#define LAKE' : ''}
+      ${PLACE.openSea ? '#define OPENSEA' : ''}
       uniform float uTime; uniform float uLevel; uniform float uRough;
       varying vec3 vWorld; varying float vSurge; varying float vCrest;
       void main(){
@@ -763,7 +863,11 @@ if (PLACE.water) {   // the sea (beach) or the lake
         p.y = uLevel + (sin(p.x * 0.21 + T * 0.5 + p.z * 0.05) * 0.012 + sin(p.z * 0.33 - T * 0.4 + p.x * 0.05) * 0.01) * (1.0 + 2.0 * uRough);
         vSurge = 0.0; vCrest = 0.0;
         #else
+        #ifdef OPENSEA
+        float far = 30.0 + length(p.xz);   // no shore: open water all round
+        #else
         float far = -p.z;
+        #endif
         float open = smoothstep(3.0, 16.0, far) * (1.0 - 0.8 * smoothstep(80.0, 400.0, far));
         // long swells rolling in toward the beach, plus a little cross-chop
         float sw1 = sin(p.z * 0.16 + T * 0.75 + sin(p.x * 0.045) * 1.4);
@@ -791,7 +895,7 @@ if (PLACE.water) {   // the sea (beach) or the lake
       varying vec3 vWorld; varying float vSurge; varying float vCrest;
       float hash12(vec2 p){ return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
       ${SAND_GLSL}
-      ${ISLAND_GLSL}
+      ${PLACE.islands || 'float islandField(vec2 p){ return 99.0; }'}
       // Fine ripples computed per pixel, so distant water stays crisp even where the mesh is coarse.
       // Each wave fades out once it gets smaller than a pixel (no shimmering).
       vec2 rippleGrad(vec2 p, float t){
@@ -851,7 +955,7 @@ if (PLACE.water) {   // the sea (beach) or the lake
         float edge = 1.0 - smoothstep(0.0, 0.04 + 0.1 * vSurge, depth);
         #ifdef LAKE
         float lace = 0.0, lines = 0.0, crest = 0.0, rings = 0.0;
-        ${PLACE.water === 'lake' ? DOCK_RINGS_GLSL : ''}
+        ${PLACE.rings || ''}
         float foam = max(edge * 0.5, rings * 0.45);
         #else
         float lace = sin(vWorld.x * 2.6 + sin(vWorld.z * 3.1 + uTime * 0.2) * 1.8) * sin(vWorld.z * 3.4 + vWorld.x * 0.8 - uTime * 0.25);
@@ -860,10 +964,9 @@ if (PLACE.water) {   // the sea (beach) or the lake
         float lines = smoothstep(0.9, 0.985, lap) * (1.0 - smoothstep(0.08, 0.5, depth)) * 0.55;
         // ripples lapping around the palm-tree mounds
         float rings = 0.0;
-        ${PALM_RINGS}
-        rings *= (1.0 - smoothstep(0.05, 0.6, depth)) * 0.75;
+        ${SCENE_ID === 'beach' ? PALM_RINGS + '\n        rings *= (1.0 - smoothstep(0.05, 0.6, depth)) * 0.75;' : (PLACE.rings || '')}
         // whitecaps, computed per pixel so they stay sharp in the distance
-        float farZ = -vWorld.z;
+        float farZ = ${PLACE.openSea ? '30.0 + length(vWorld.xz)' : '-vWorld.z'};
         float swp = sin(vWorld.z * 0.16 + uTime * 0.75 + sin(vWorld.x * 0.045) * 1.4);
         float crest = smoothstep(0.9 - 0.14 * uRough, 0.985, swp) * smoothstep(3.0, 16.0, farZ) * (1.0 - smoothstep(40.0, 220.0, farZ))
                     * (0.55 + 0.45 * sin(vWorld.x * 0.37 + vWorld.z * 0.11 + uTime * 0.4));
@@ -896,7 +999,9 @@ if (PLACE.water) {   // the sea (beach) or the lake
         #include <colorspace_fragment>
       }`,
   });
-  scene.add(new THREE.Mesh(g, mat));
+  const water = new THREE.Mesh(g, mat);
+  scene.add(water);
+  PLACE.waterMesh = water;   // the boat scene rocks it
 }
 
 // ---------------------------------------------------------------------
@@ -1367,7 +1472,7 @@ if (SCENE_ID === 'beach') {
 
 // Seagulls (daytime) and shooting stars (night)
 const gulls = [];
-if (SCENE_ID === 'beach') {
+if (SCENE_ID === 'beach' || SCENE_ID === 'boat') {
   const wingGeo = new THREE.BufferGeometry();
   wingGeo.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0.25, 0, 0, -0.2, 1.1, 0.12, -0.15, 0, 0, 0.25, 1.1, 0.12, -0.15, 0.45, 0.05, 0.12], 3));
   wingGeo.computeVertexNormals();
@@ -1412,7 +1517,7 @@ function updateSnow(t, dt, amt) {
   const n = Math.floor(snowfall.flakes.length * clamp(amt, 0, 1)), slant = 0.3 + env.wind * 1.4, P = snowfall.pos;
   snowfall.flakes.forEach((f, i) => {
     f.y -= f.v * dt * (1 + 0.6 * wx.storm); f.x += (slant + Math.sin(t * 0.8 + f.ph) * 0.35) * dt; f.z += Math.cos(t * 0.6 + f.ph * 1.3) * 0.2 * dt;
-    if (f.y < sandHeight(f.x, f.z) - 0.05 || f.x > 21) { f.y = rand(11, 14); f.x = rand(-22, 19); f.z = rand(-7, 12); }
+    if (f.y < Math.max(sandHeight(f.x, f.z), PLACE.water ? -0.3 : -99) - 0.05 || f.x > 21) { f.y = rand(11, 14); f.x = rand(-22, 19); f.z = rand(-7, 12); }
     const k = i * 3;
     if (i >= n) { P[k + 1] = -99; return; }
     P[k] = f.x + Math.sin(t * 1.7 + f.ph * 3) * 0.05; P[k + 1] = f.y; P[k + 2] = f.z;
@@ -1431,7 +1536,7 @@ function updateRain(t, dt) {
   const n = Math.floor(rain.drops.length * clamp(amt, 0, 1)), slant = 0.6 + env.wind * 2.2, P = rain.pos;
   rain.drops.forEach((d, i) => {
     d.y -= d.v * dt; d.x += slant * dt;
-    if (d.y < sandHeight(d.x, d.z) - 0.4 || d.x > 26) { d.y = rand(12, 16); d.x = rand(-28, 24); d.z = rand(-14, 13); }
+    if (d.y < Math.max(sandHeight(d.x, d.z), PLACE.water ? -0.3 : -99) - 0.4 || d.x > 26) { d.y = rand(12, 16); d.x = rand(-28, 24); d.z = rand(-14, 13); }
     const k = i * 6;
     if (i >= n) { P[k + 1] = P[k + 4] = -99; return; }
     const len = 0.32 + d.v * 0.012;
@@ -2196,15 +2301,6 @@ SCENE_BUILD.lake = {
       part(new THREE.ConeGeometry(0.025, 0.14, 5), '#2a2a2a', [0, 0.24, 0.48], [Math.PI / 2, 0, 0]),
     ], { shadow: false });
     loon.scale.setScalar(1.4); scene.add(loon); L.loon = loon; L.loonDive = 25;
-    // A kettle warming by the fire
-    const kettle = propMesh([
-      part(new THREE.SphereGeometry(0.16, 10, 7), '#6d757c', [0, 0.13, 0], [0, 0, 0], [1, 0.8, 1]),
-      part(new THREE.CylinderGeometry(0.06, 0.08, 0.06, 8), '#5d656b', [0, 0.27, 0]),
-      part(new THREE.CylinderGeometry(0.015, 0.03, 0.2, 5), '#6d757c', [0.17, 0.17, 0], [0, 0, -0.9]),
-      part(new THREE.TorusGeometry(0.11, 0.012, 4, 10, Math.PI), '#3a3d40', [0, 0.27, 0]),
-    ]);
-    kettle.position.set(FIRE_POS.x + 0.95, sandHeight(FIRE_POS.x + 0.95, FIRE_POS.z - 0.35), FIRE_POS.z - 0.35); scene.add(kettle);
-    makeBlob(kettle.position.x, kettle.position.z, 0.5, 0.5, 0.5);
     // Mist that lies on the lake at dawn (and in fog)
     L.mist = makePuffs(10, '#e8eef4', 2).map((p, i) => ({ ...p, x: srange(-40, 40), y: srange(0.1, 0.8), z: srange(-12, -70), s: srange(14, 28), dx: srange(0.15, 0.4) }));
     // Buffalo-check wool blanket for the one on the ground
@@ -2350,8 +2446,8 @@ SCENE_BUILD.cabin = {
     // glowing glass: two windows, the round gable window, a lantern by the door; warm light spilling on the porch
     const glass = new THREE.MeshBasicMaterial({ color: '#2b2f38' });
     L.glass = glass;
-    for (const cx of [-3.3, 3.3]) { const w = new THREE.Mesh(new THREE.PlaneGeometry(1.36, 1.18), glass); w.position.set(cx, F + 1.6, WZ + 0.0); scene.add(w); }
-    const rw = new THREE.Mesh(new THREE.CircleGeometry(0.36, 16), glass); rw.position.set(0, F + 3.85, WZ + 0.08); scene.add(rw);
+    for (const cx of [-3.3, 3.3]) { const w = new THREE.Mesh(new THREE.PlaneGeometry(1.36, 1.18), glass); w.position.set(cx, F + 1.6, WZ + 0.035); scene.add(w); }   // in front of the wall behind (they used to fight and flicker)
+    const rw = new THREE.Mesh(new THREE.CircleGeometry(0.36, 16), glass); rw.position.set(0, F + 3.85, WZ + 0.11); scene.add(rw);
     L.glows = [];
     for (const [x, y, s] of [[-3.3, F + 1.6, 3.2], [3.3, F + 1.6, 3.2], [0, F + 3.85, 2.0]]) { const g = new THREE.Sprite(glowMat('#ff9a4a')); g.position.set(x, y, WZ + 0.3); g.scale.setScalar(s); g.renderOrder = 4; scene.add(g); L.glows.push(g); }
     L.pools = [-3.3, 3.3].map((x) => { const m = new THREE.Mesh(new THREE.PlaneGeometry(2.4, 2.6), new THREE.MeshBasicMaterial({ map: glowTex, color: '#ff9a4a', transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0 })); m.rotation.x = -Math.PI / 2; m.position.set(x, F + 0.012, WZ + 1.3); scene.add(m); return m; });
@@ -2361,7 +2457,7 @@ SCENE_BUILD.cabin = {
     L.lanternGlow = new THREE.Sprite(glowMat('#ffb456')); L.lanternGlow.position.copy(L.lantern.position); L.lanternGlow.scale.setScalar(1.8); L.lanternGlow.renderOrder = 4; scene.add(L.lanternGlow);
 
     // string lights along the front of the roof
-    const bulbs = [], cols = ['#ff4a3a', '#ffb02e', '#3ad06a', '#4a8cff', '#ffe6a8'];
+    const bulbs = [], cols = ['#ffd49a', '#ffc77e', '#ffdcab'];   // warm white string lights
     for (const s of [-1, 1]) for (let k = 0; k <= 15; k++) {
       const u = k / 15, x = s * half * (1 - u) * 0.98, y = roofY(x) - 0.2 - 0.1 * Math.sin(Math.PI * ((k % 3) / 3));
       if (s > 0 && k === 15) continue;
@@ -2402,7 +2498,7 @@ SCENE_BUILD.cabin = {
   seat(def) { return def.pose === 'rockSit' ? barrelSeat(SEAT_TOP.rockSit) : crateSeat(SEAT_TOP.rockLegUp); },
   update(t, dt) {
     const L = this.L, glow = Math.max(env.fireOn, 0.25 * env.day * (1 - wx.cloud * 0.3));
-    const fl = 0.85 + 0.15 * (0.6 * noise1(t * 3.1) + 0.4 * noise1(t * 7.7 + 2));   // the fireplace inside flickers
+    const fl = 0.94 + 0.06 * fbm1(t * 0.9);   // the fireplace inside glows warmly, barely wavering
     L.glass.color.set('#2b2f38').lerp(_c1.set('#ffb15c'), clamp(glow * fl, 0, 1));
     L.glows.forEach((g) => { g.material.opacity = env.fireOn * 0.5 * fl; });
     L.pools.forEach((p) => { p.material.opacity = env.fireOn * 0.28 * fl; });
@@ -2412,7 +2508,7 @@ SCENE_BUILD.cabin = {
     // string lights: on from dusk, each bulb breathing gently
     const on = smooth(0.1, 0.6, env.fireOn);
     L.bulbs.material.color.setScalar(0.35 + 0.75 * on);
-    L.bulbGlow.material.opacity = on * (0.75 + 0.1 * Math.sin(t * 1.3));
+    L.bulbGlow.material.opacity = on * 0.8;
     // chimney smoke drifting downwind
     _c2.set('#4c4f58').lerp(_c1.set('#d8dce3'), env.day);
     const wind = env.wind * (0.55 + 0.7 * env.gust);
@@ -2545,6 +2641,569 @@ SCENE_BUILD.meadow = {
       f.g.rotation.y = fbm1(k * 0.6 + 3) * 4;
       const flap = 0.15 + 1.0 * Math.abs(Math.sin(t * 13 + f.ph));
       f.l.rotation.z = flap; f.r.rotation.z = -flap;
+    }
+  },
+};
+
+
+// ---- More shared pieces: butterflies, signs, big leaves, jungle palms ----
+function makeButterflies(colors, area) {
+  const wingG = new THREE.PlaneGeometry(0.11, 0.09); wingG.translate(0.055, 0, 0); wingG.rotateX(-Math.PI / 2);
+  const flies = colors.map((c) => {
+    const g = new THREE.Group(), m = new THREE.MeshLambertMaterial({ color: c, side: THREE.DoubleSide });
+    const l = new THREE.Mesh(wingG, m), r = new THREE.Mesh(wingG, m); r.scale.x = -1;
+    g.add(l, r); scene.add(g);
+    return { g, l, r, ph: srand() * 100, cx: srange(area[0], area[1]), cz: srange(area[2], area[3]) };
+  });
+  return (t, show) => {
+    for (const f of flies) {
+      f.g.visible = show;
+      if (!show) continue;
+      const k = t * 0.18 + f.ph;
+      f.g.position.set(f.cx + 3.2 * fbm1(k), 0.9 + 0.6 * fbm1(k * 1.3 + 5) + 0.06 * Math.sin(t * 14 + f.ph), f.cz + 2.2 * fbm1(k * 0.9 + 9));
+      f.g.rotation.y = fbm1(k * 0.6 + 3) * 4;
+      const flap = 0.15 + Math.abs(Math.sin(t * 13 + f.ph));
+      f.l.rotation.z = flap; f.r.rotation.z = -flap;
+    }
+  };
+}
+// A painted sign: text on a board (canvas texture).
+function signTexture(text, { w = 512, h = 96, bg = '#f1ead8', fg = '#1f2a24', border = '#2f4a3a', font = 'bold 58px Georgia, serif' } = {}) {
+  return canvasTexture(w, h, (g) => {
+    g.fillStyle = border; g.fillRect(0, 0, w, h);
+    g.fillStyle = bg; g.fillRect(8, 8, w - 16, h - 16);
+    g.fillStyle = fg; g.font = font; g.textAlign = 'center'; g.textBaseline = 'middle'; g.fillText(text, w / 2, h / 2 + 3);
+  });
+}
+// Big tropical leaves on stems, built 1 m tall (they sway like the grass).
+function leafPlantGeo(leaves = 7, dark = '#245a26', light = '#4f9a3c') {
+  const pos = [], col = [], cd = COL(dark), cl = COL(light), c = new THREE.Color();
+  const v = (p, k) => { pos.push(p[0], p[1], p[2]); c.lerpColors(cd, cl, k); col.push(c.r, c.g, c.b); };
+  for (let i = 0; i < leaves; i++) {
+    const a = i / leaves * Math.PI * 2 + srange(-0.3, 0.3), ca = Math.cos(a), sa = Math.sin(a);
+    const sh = srange(0.45, 0.8), sx = ca * sh * 0.35, sz = sa * sh * 0.35;   // stem tip
+    const len = srange(0.55, 0.85), wd = len * srange(0.32, 0.45), droop = srange(0.15, 0.45);
+    const B = [sx, sh, sz], T = [sx + ca * len, sh - droop, sz + sa * len];
+    const M = [sx + ca * len * 0.45, sh + 0.08 - droop * 0.2, sz + sa * len * 0.45];
+    const Lp = [M[0] - sa * wd * 0.5, M[1] - 0.06, M[2] + ca * wd * 0.5], Rp = [M[0] + sa * wd * 0.5, M[1] - 0.06, M[2] - ca * wd * 0.5];
+    v([0, 0, 0], 0); v([sx + 0.02, sh, sz], 0.3); v([sx - 0.02, sh, sz], 0.3);       // stem
+    v(B, 0.4); v(Lp, 0.8); v(M, 1); v(B, 0.4); v(M, 1); v(Rp, 0.7);
+    v(M, 1); v(Lp, 0.8); v(T, 0.9); v(M, 1); v(T, 0.9); v(Rp, 0.7);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.computeVertexNormals();
+  return g;
+}
+// A palm for distant forests: a leaning trunk and drooping fronds, built 1 m tall.
+function palmParts() {
+  const ps = [part(new THREE.CylinderGeometry(0.014, 0.024, 1, 5, 1, true), '#7d6040', [0.04, 0.5, 0], [0, 0, -0.08])];
+  for (let f = 0; f < 7; f++) {
+    const a = f / 7 * Math.PI * 2;
+    const fr = new THREE.BufferGeometry(), pts = [];
+    const p = (u, s) => [Math.cos(a) * u * 0.42 - Math.sin(a) * s * 0.06 * (1 - u), 1 + 0.1 * u - 0.32 * u * u, Math.sin(a) * u * 0.42 + Math.cos(a) * s * 0.06 * (1 - u)];
+    for (let k = 0; k < 4; k++) { const u0 = k / 4, u1 = (k + 1) / 4; pts.push(...p(u0, -1), ...p(u0, 1), ...p(u1, 0), ...p(u0, -1), ...p(u1, 0), ...p(u0, 1)); }
+    fr.setAttribute('position', new THREE.Float32BufferAttribute(pts, 3));
+    ps.push(part(fr, f % 2 ? '#3f7d36' : '#4c8f3c', [0.08, 0, 0]));
+  }
+  return ps;
+}
+
+// ======================= Jungle waterfall =======================
+SCENE_BUILD.jungle = {
+  build() {
+    const L = {};
+    const soil = COL('#4b4a30'), moss = COL('#56703a'), moss2 = COL('#4a6533'), wetRock = COL('#55534b'), rockC = COL('#6a675d'), rockM = COL('#5b6c45'),
+      canopy = COL('#2f5a2c'), canopy2 = COL('#3a6b33'), dirt = COL('#6b5a3e');
+    const color = (x, y, z, ny, c) => {
+      const d = poolDist(x, z), j = 0.92 + srand() * 0.16;
+      if (y < -0.2) return shade(c, wetRock, j);
+      if (Math.hypot(x - FIRE_POS.x, z - FIRE_POS.z) < 2.0) return shade(c, dirt, j);
+      if (ny < 0.55) { const r = srand(); return shade(c, r < 0.35 ? rockM : r < 0.7 ? rockC : wetRock, j); }   // cliff faces, some mossy
+      if (d < 2.2) return shade(c, srand() < 0.5 ? wetRock : rockC, j);
+      if (y > 4) return shade(c, srand() < 0.5 ? canopy : canopy2, j);
+      return shade(c, [moss, moss2, soil][Math.floor(srand() * 3)], j);
+    };
+    makeTerrain({ x0: -80, x1: 80, z0: 30, z1: -48, nx: 130, nz: 100, height: jungleHeight, color, mat: terrainMat({ wet: 0.3 }) });
+    makeTerrain({ x0: -900, x1: 900, z0: -46, z1: -860, nx: 110, nz: 64, px: 1.7, pz: 1.6, height: (x, z) => jungleHeight(x, z) - 0.06, color, mat: terrainMat({ wet: 0.3, twoSided: true }), receive: false });
+
+    // Jungle canopy on the cliffs and hills: round trees and palms (two draw calls)
+    const ok = (x, z) => { const d = poolDist(x, z), h = jungleHeight(x, z); return d > 4 && h > 2.5 && !(Math.abs(x - FALL.x) < 7 + Math.max(0, -z - 40) * 0.25 && z > -90) && !(Math.abs(x) < 15 && z > -6); };
+    const o = oakParts(1, { detail: 0, leaves: ['#2c5a2a', '#3a6d33', '#24502a'] });
+    const treeGeo = mergeParts([...o.trunk, ...o.crown]);
+    const tspots = scatter(5000, -260, 260, -380, 20, (x, z) => ok(x, z) && srand() < 0.7).slice(0, Math.round(900 * LOD));
+    forest(treeGeo, tspots.map(([x, z]) => ({ x, z, y: jungleHeight(x, z) - 0.3, s: srange(4, 8) * (1 + Math.hypot(x, z) / 250), rot: srand() * 6, tint: srange(0.8, 1.15) })), { mat: VCOL2 });
+    const pspots = scatter(2000, -200, 200, -300, 20, (x, z) => ok(x, z) && srand() < 0.5).slice(0, Math.round(160 * LOD));
+    forest(mergeParts(palmParts()), pspots.map(([x, z]) => ({ x, z, y: jungleHeight(x, z) - 0.2, s: srange(7, 12), rot: srand() * 6, tint: srange(0.85, 1.1) })), { mat: VCOL2 });
+    // palms framing the scene (and beside the characters on phones)
+    makePalm({ x: -10.6, z: -1.8, h: 6.4, lean: 1.0, rot: 0.3 });
+    makePalm({ x: -14.8, z: 0.6, h: 7.6, lean: 1.5, rot: -0.5 });
+    makePalm({ x: 12.4, z: -1.6, h: 6.9, lean: -1.3, rot: -0.2 });
+
+    // Vines hanging down the cliffs
+    const vines = [];
+    for (let i = 0; i < 90; i++) {
+      const x = srange(-30, 30); if (Math.abs(x - FALL.x) < 3.5) continue;
+      let z = -6; while (z > -60 && jungleHeight(x, z) < 6) z -= 0.25;
+      if (z <= -60) continue;
+      const top = jungleHeight(x, z), len = srange(2.5, Math.min(8, top - 0.5));
+      let px = x, py = top, pz = z + 0.9;
+      for (let k = 0; k < 6; k++) {
+        const seg = len / 6, nx2 = px + srange(-0.12, 0.12), ny2 = py - seg, nz2 = pz + srange(-0.05, 0.12);
+        vines.push(part(new THREE.CylinderGeometry(0.03, 0.035, seg, 4, 1, true), '#2d4a22', [(px + nx2) / 2, (py + ny2) / 2, (pz + nz2) / 2], [0, 0, (px - nx2) / seg]));
+        if (srand() < 0.7) vines.push(part(new THREE.OctahedronGeometry(0.11, 0), srand() < 0.12 ? '#e0506a' : '#3f7a2e', [nx2 + srange(-0.1, 0.1), ny2, nz2 + 0.05], [srand(), srand(), 0], [1, 0.5, 1]));
+        px = nx2; py = ny2; pz = nz2;
+      }
+    }
+    scene.add(propMesh(vines, { shadow: false }));
+
+    // The waterfall: two layers of falling water (an animated shader) and spray at the bottom
+    const fallU = { uTime: { value: 0 }, uTint: { value: new THREE.Color('#e8f4f6') }, uFogColor: { value: new THREE.Color() }, uFogNear: { value: 45 }, uFogFar: { value: 650 } };
+    const fallMat = (alpha, speed) => new THREE.ShaderMaterial({
+      uniforms: fallU, transparent: true, depthWrite: false, side: THREE.DoubleSide,
+      vertexShader: 'varying vec2 vUv; varying float vDist; void main(){ vUv = uv; vec4 mv = modelViewMatrix * vec4(position, 1.0); vDist = -mv.z; gl_Position = projectionMatrix * mv; }',
+      fragmentShader: `uniform float uTime, uFogNear, uFogFar; uniform vec3 uTint, uFogColor; varying vec2 vUv; varying float vDist;
+        float hash(vec2 p){ return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453); }
+        float noise(vec2 p){ vec2 i = floor(p), f = fract(p); f = f * f * (3.0 - 2.0 * f);
+          return mix(mix(hash(i), hash(i + vec2(1.0, 0.0)), f.x), mix(hash(i + vec2(0.0, 1.0)), hash(i + vec2(1.0, 1.0)), f.x), f.y); }
+        void main(){
+          float x = vUv.x, y = vUv.y;
+          float t = uTime * ${speed.toFixed(2)};
+          float edge = smoothstep(0.0, 0.2, x) * smoothstep(1.0, 0.8, x);
+          float s = noise(vec2(x * 22.0, y * 1.6 + t * 2.4)) * 0.6 + noise(vec2(x * 55.0, y * 4.0 + t * 3.7)) * 0.4;
+          float a = edge * (0.45 + 0.55 * s) * smoothstep(0.0, 0.05, y) * (0.8 + 0.2 * smoothstep(1.0, 0.9, y));
+          float white = clamp(smoothstep(0.45, 0.8, s) + smoothstep(0.3, 0.0, y) * 0.7, 0.0, 1.0);
+          vec3 col = mix(uTint * vec3(0.62, 0.8, 0.84), uTint, white);
+          col = mix(col, uFogColor, smoothstep(uFogNear, uFogFar, vDist));
+          gl_FragColor = vec4(col, a * ${alpha.toFixed(2)});
+          #include <colorspace_fragment>
+        }`,
+    });
+    const fallGeo = (w0, w1, dz) => {
+      const g = new THREE.BufferGeometry(), y0 = -0.32, y1 = FALL.top - 0.15, z0 = FALL.zBot + 0.55 + dz, z1 = FALL.zTop + 0.45 + dz, x = FALL.x;
+      g.setAttribute('position', new THREE.Float32BufferAttribute([x - w0, y0, z0, x + w0, y0, z0, x + w1, y1, z1, x - w0, y0, z0, x + w1, y1, z1, x - w1, y1, z1], 3));
+      g.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 1, 1, 0, 0, 1, 1, 0, 1], 2));
+      return g;
+    };
+    const f1 = new THREE.Mesh(fallGeo(2.4, 1.7, 0), fallMat(0.95, 1)), f2 = new THREE.Mesh(fallGeo(3.2, 2.0, 0.35), fallMat(0.4, 1.35));
+    f1.renderOrder = f2.renderOrder = 3; scene.add(f1, f2); L.fallU = fallU;
+    L.spray = makePuffs(12, '#eef6f7', 3);
+    // a faint rainbow in the spray on sunny days
+    const rbTex = canvasTexture(128, 64, (g) => {
+      ['#ff4040', '#ff9f30', '#ffe840', '#50e050', '#40a0ff', '#8050ff'].forEach((c, i) => { g.strokeStyle = c; g.lineWidth = 3; g.globalAlpha = 0.9; g.beginPath(); g.arc(64, 64, 52 - i * 3, Math.PI, 0); g.stroke(); });
+    });
+    L.rainbow = new THREE.Mesh(new THREE.PlaneGeometry(10, 5), new THREE.MeshBasicMaterial({ map: rbTex, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0 }));
+    L.rainbow.position.set(FALL.x + 0.5, 1.2, FALL.zBot + 3.5); L.rainbow.renderOrder = 4; scene.add(L.rainbow);
+
+    // Boulders round the pool
+    for (const [x, z, s, c] of [[-9, -6.5, 1.2, '#6c6b60'], [-13, -10, 1.8, '#5f6555'], [11, -7.5, 1.4, '#66655a'], [15, -12, 2.2, '#5a604f'], [-3.5, -30, 1.6, '#5f5e55'], [7.5, -31, 1.9, '#62655a'], [-1, -9.5, 0.7, '#6b695f'], [5.2, -6, 0.6, '#707066']]) {
+      const r = makeRock(s * 1.2, s * 0.8, s, c, 1); r.position.set(x, jungleHeight(x, z) - 0.3, z); r.rotation.y = srand() * 6; scene.add(r);
+    }
+    // Ferns and big leaves (they sway in the wind)
+    const clear = CLEAR_SPOTS();
+    const dry = (x, z) => poolDist(x, z) > 1.5 && clearOf(x, z, clear, 0.2);
+    grassField(tuftGeo(7, '#284a20', '#6aa04a', { w: 0.16, lean: 0.55 }),
+      scatter(Math.round(1800 * LOD), -26, 26, -10, 14, (x, z) => dry(x, z) && jungleHeight(x, z) < 1.5).concat(scatter(300, -9, 9, 12, 20, () => true)), { size: [0.45, 0.9] });
+    const leafSpots = scatter(Math.round(600 * LOD), -30, 30, -14, 12, (x, z) => dry(x, z) && jungleHeight(x, z) < 2 && (Math.abs(x) > 6.5 || z < -2.2 || z > 6) && srand() < (Math.abs(x) > 9 ? 0.7 : 0.25))
+      .concat(scatter(60, -9, 9, 12, 20, () => true));
+    grassField(leafPlantGeo(7), leafSpots, { size: [0.9, 2.2], tints: [0.85, 1.1] });
+
+    // Glowing mushrooms that light up at night
+    const stems = [], caps = [], glowP = [], glowC = [], capCols = ['#6fe8ff', '#7d9bff', '#8dffb0'].map(COL);
+    for (const [cx, cz] of scatter(400, -22, 22, -14, 9, (x, z) => dry(x, z) && poolDist(x, z) < 9 && jungleHeight(x, z) < 1).slice(0, 16)) {
+      const n = 3 + Math.floor(srand() * 4), cc = capCols[Math.floor(srand() * 3)];
+      for (let k = 0; k < n; k++) {
+        const x = cx + srange(-0.35, 0.35), z = cz + srange(-0.35, 0.35), y = jungleHeight(x, z), h = srange(0.08, 0.28), r = h * srange(0.5, 0.8);
+        stems.push(part(new THREE.CylinderGeometry(r * 0.25, r * 0.3, h, 5), '#e8e2cc', [x, y + h / 2, z]));
+        caps.push(part(new THREE.SphereGeometry(r, 7, 4, 0, Math.PI * 2, 0, Math.PI / 2), '#' + cc.getHexString(), [x, y + h - 0.01, z], [0, 0, 0], [1, 0.6, 1], 0.05));
+        glowP.push(x, y + h, z); glowC.push(cc.r, cc.g, cc.b);
+      }
+    }
+    scene.add(propMesh(stems, { shadow: false }));
+    L.capMat = new THREE.MeshBasicMaterial({ vertexColors: true });
+    scene.add(new THREE.Mesh(mergeParts(caps), L.capMat));
+    const gg = new THREE.BufferGeometry(); gg.setAttribute('position', new THREE.Float32BufferAttribute(glowP, 3)); gg.setAttribute('color', new THREE.Float32BufferAttribute(glowC, 3));
+    L.shroomGlow = new THREE.Points(gg, new THREE.PointsMaterial({ map: glowTex, size: 0.9, vertexColors: true, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0 }));
+    L.shroomGlow.renderOrder = 4; scene.add(L.shroomGlow);
+    L.flies = makeButterflies(['#3a8cff', '#ff8a24', '#ffe04a', '#3a8cff'], [-7, 7, -2, 4]);
+    // a woven palm-leaf mat
+    placeRug(rugTexture((g) => {
+      g.fillStyle = '#c9a66a'; g.fillRect(0, 0, 64, 64);
+      for (let i = 0; i < 64; i += 8) { g.fillStyle = 'rgba(90,60,25,0.35)'; g.fillRect(i, 0, 4, 64); g.fillStyle = 'rgba(255,240,200,0.15)'; g.fillRect(0, i, 64, 3); }
+      g.fillStyle = '#7a4a2a'; g.fillRect(0, 0, 64, 4); g.fillRect(0, 60, 64, 4);
+    }), 1.6, 2.3, 0.35, [2, 3]);
+    this.L = L;
+  },
+  seat(def) { return def.pose === 'rockSit' ? stumpSeat(SEAT_TOP.rockSit) : makeRock(0.95, 0.95, 0.82, '#6d7858'); },
+  update(t, dt) {
+    const L = this.L;
+    L.fallU.uTime.value = t;
+    L.fallU.uTint.value.set('#eaf5f7').multiplyScalar(0.18 + 0.82 * env.day).lerp(_c1.set('#ffb070'), 0.12 * env.fireOn);
+    L.fallU.uFogColor.value.copy(scene.fog.color); L.fallU.uFogNear.value = scene.fog.near; L.fallU.uFogFar.value = scene.fog.far;
+    _c2.set('#e8f2f4').multiplyScalar(0.25 + 0.75 * env.day);
+    for (const p of L.spray) {
+      p.life += dt / 5;
+      if (p.life >= 1) { p.life -= 1; p.ph = Math.random() * 50; p.x = rand(-2.2, 2.2); }
+      const k = p.life;
+      p.sp.position.set(FALL.x + p.x + fbm1(k + p.ph) * 0.8, -0.1 + k * 3.2, FALL.zBot + 1.0 + k * 2.2);
+      p.sp.scale.setScalar(1.5 + k * 3.5);
+      p.sp.material.color.copy(_c2);
+      p.sp.material.opacity = 0.45 * Math.sin(Math.PI * k);
+      p.sp.material.rotation = p.spin * k * 2;
+    }
+    L.rainbow.material.opacity = 0.16 * smooth(8, 20, env.alt) * smooth(60, 40, env.alt) * (1 - smooth(0.3, 0.8, wx.cloud)) * (1 - wx.fog);
+    const night = smooth(0.3, 0.9, env.night), pulse = 0.85 + 0.15 * Math.sin(t * 0.9);
+    L.capMat.color.setScalar(0.35 + 1.0 * night * pulse);
+    L.shroomGlow.material.opacity = 0.7 * night * pulse;
+    L.flies(t, env.day > 0.5 && wx.rain < 0.1);
+  },
+};
+
+// ======================= Old train platform =======================
+SCENE_BUILD.train = {
+  build() {
+    const L = {};
+    const g1 = COL('#6f8f4a'), g2 = COL('#7c9a50'), dryG = COL('#9a9a5a'), bal = COL('#7d776e'), bal2 = COL('#6a655c');
+    const fields = ['#cdb45e', '#78a24c', '#5d8a3e', '#8b7352', '#9cbf5f', '#b9c46a'].map(COL), hedge = COL('#3f6630'), farG = COL('#6f9a4c');
+    const color = (x, y, z, ny, c) => {
+      const j = 0.93 + srand() * 0.14;
+      if (Math.abs(z - TRACK_Z) < 2.2) return shade(c, srand() < 0.5 ? bal : bal2, j);
+      if (z < -60 && ny > 0.8) {
+        const ca = Math.cos(0.3), sa = Math.sin(0.3), u = (x * ca - z * sa) / 44, v = (x * sa + z * ca) / 30;
+        if (u - Math.floor(u) < 0.07 || v - Math.floor(v) < 0.1) return shade(c, hedge, j);
+        const hsh = hash3(Math.floor(u), Math.floor(v), 3);
+        return shade(c, fields[Math.floor(hsh * hsh * fields.length * 0.999)], j);
+      }
+      if (z < -30) return shade(c, farG, j);
+      return shade(c, Math.sin(x * 0.3) * Math.sin(z * 0.4) > 0.6 ? dryG : srand() < 0.5 ? g1 : g2, j);
+    };
+    const mat = terrainMat({ wet: 0.3 });
+    makeTerrain({ x0: -80, x1: 80, z0: 30, z1: -40, nx: 120, nz: 70, height: trainGround, color, mat });
+    makeTerrain({ x0: -900, x1: 900, z0: -38, z1: -860, nx: 110, nz: 64, px: 1.7, pz: 1.5, height: (x, z) => trainGround(x, z) - 0.06, color, mat, receive: false });
+
+    // The platform: stone slabs on brick walls, a pale edge along the track
+    const ps = [part(new THREE.BoxGeometry(PLAT.x1 - PLAT.x0, 0.08, PLAT.z1 - PLAT.z0), '#3a3836', [0, -0.1, (PLAT.z0 + PLAT.z1) / 2])];
+    for (let x = PLAT.x0; x < PLAT.x1 - 0.1; x += 1.3) for (let z = PLAT.z0 + 0.5; z < PLAT.z1 - 0.5; z += 1.2) {
+      const k = srand();
+      ps.push(part(new THREE.BoxGeometry(1.25, 0.08, 1.15), k < 0.33 ? '#9a958c' : k < 0.66 ? '#8d887f' : '#a49f95', [x + 0.65, -0.04 + srange(-0.012, 0.008), z + 0.6], [0, 0, srange(-0.01, 0.01)], 1, 0.04));
+    }
+    for (let x = PLAT.x0; x < PLAT.x1 - 0.1; x += 1.0) for (const [z, c] of [[PLAT.z0 + 0.25, '#c7c1b3'], [PLAT.z1 - 0.25, '#bdb7a9']]) ps.push(part(new THREE.BoxGeometry(0.97, 0.12, 0.5), c, [x + 0.5, -0.03, z], [0, 0, 0], 1, 0.04));
+    ps.push(part(new THREE.BoxGeometry(PLAT.x1 - PLAT.x0, 0.005, 0.09), '#e9e4d4', [0, 0.035, PLAT.z0 + 0.42], [0, 0, 0], 1, 0.02));
+    const brick = rugTexture((g) => {
+      g.fillStyle = '#5c4a40'; g.fillRect(0, 0, 64, 64);
+      for (let r = 0; r < 8; r++) for (let k = -1; k < 4; k++) { g.fillStyle = ['#8a4b3a', '#7d4232', '#94523f', '#6f3c2e'][(r * 5 + k * 3 + 8) % 4]; g.fillRect(k * 16 + (r % 2) * 8 + 1, r * 8 + 1, 14, 6); }
+    });
+    brick.repeat.set((PLAT.x1 - PLAT.x0) / 2, 0.45);
+    for (const [z, ry, y0] of [[PLAT.z1, 0, -0.62], [PLAT.z0, Math.PI, -0.82]]) {
+      const hh = -y0 - 0.06, wall = new THREE.Mesh(new THREE.PlaneGeometry(PLAT.x1 - PLAT.x0, hh), new THREE.MeshLambertMaterial({ map: brick }));
+      wall.position.set(0, y0 + hh / 2, z + (ry ? -0.001 : 0.001)); wall.rotation.y = ry; wall.receiveShadow = S.SHADOWS; scene.add(wall);
+    }
+    // the track: rails on wooden sleepers
+    for (const s of [-1, 1]) ps.push(part(new THREE.BoxGeometry(240, 0.13, 0.08), '#6d6762', [0, -0.56, TRACK_Z + s * 0.72], [0, 0, 0], 1, 0.02));
+    const sl = [];
+    for (let x = -120; x < 120; x += 0.66) sl.push({ x, y: -0.67, z: TRACK_Z, s: 1, rot: srange(-0.03, 0.03), tint: srange(0.8, 1.1) });
+    forest(mergeParts([part(new THREE.BoxGeometry(0.24, 0.12, 2.5), '#3a2a1e', [0, 0, 0], [0, 0, 0], 1, 0.1)]), sl);
+
+    // Lamp posts, a bench, a luggage cart, milk churns, the station name board
+    const lamps = [[-8.2, -1.9], [8.4, -1.9]];
+    for (const [x, z] of lamps) {
+      ps.push(part(new THREE.CylinderGeometry(0.07, 0.11, 3.3, 7), '#2a3b2f', [x, 1.65, z]), part(new THREE.CylinderGeometry(0.2, 0.25, 0.3, 7), '#2a3b2f', [x, 0.15, z]),
+        part(new THREE.ConeGeometry(0.3, 0.25, 6), '#1f2a22', [x, 3.78, z]), part(new THREE.BoxGeometry(0.08, 0.08, 0.6), '#2a3b2f', [x, 3.2, z]));
+    }
+    L.lampGlass = new THREE.MeshBasicMaterial({ color: '#4a4436' });
+    L.lampGlows = []; L.lampPools = [];
+    for (const [x, z] of lamps) {
+      const gl = new THREE.Mesh(new THREE.CylinderGeometry(0.18, 0.13, 0.36, 6), L.lampGlass); gl.position.set(x, 3.5, z); scene.add(gl);
+      const sp = new THREE.Sprite(glowMat('#ffc070')); sp.position.set(x, 3.5, z); sp.scale.setScalar(2.4); sp.renderOrder = 4; scene.add(sp); L.lampGlows.push(sp);
+      const pool = new THREE.Mesh(new THREE.PlaneGeometry(5, 5), new THREE.MeshBasicMaterial({ map: glowTex, color: '#ffb060', transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0 }));
+      pool.rotation.x = -Math.PI / 2; pool.position.set(x, 0.02, z + 0.8); scene.add(pool); L.lampPools.push(pool);
+    }
+    const bx = 11.6, bz = -1.4;
+    for (let k = 0; k < 4; k++) ps.push(part(new THREE.BoxGeometry(2.0, 0.05, 0.11), '#8a6038', [bx, 0.46, bz + k * 0.13 - 0.2]));
+    for (let k = 0; k < 2; k++) ps.push(part(new THREE.BoxGeometry(2.0, 0.11, 0.05), '#8a6038', [bx, 0.62 + k * 0.17, bz - 0.33], [-0.15, 0, 0]));
+    for (const s of [-1, 1]) ps.push(part(new THREE.BoxGeometry(0.06, 0.95, 0.5), '#2a2826', [bx + s * 0.85, 0.47, bz - 0.05]));
+    ps.push(part(new THREE.BoxGeometry(0.6, 0.42, 0.22), '#7a4a2c', [bx + 0.35, 0.7, bz + 0.05], [0, 0.2, 0]), part(new THREE.BoxGeometry(0.62, 0.04, 0.24), '#4e2f1c', [bx + 0.35, 0.92, bz + 0.05], [0, 0.2, 0]));
+    const cx = -9.8, cz = 2.6;
+    ps.push(part(new THREE.BoxGeometry(2.2, 0.12, 1.1), '#7d5a36', [cx, 0.55, cz]), part(new THREE.BoxGeometry(0.08, 0.6, 1.1), '#6a4a2c', [cx - 1.08, 0.85, cz]));
+    for (const s of [-1, 1]) ps.push(part(new THREE.CylinderGeometry(0.42, 0.42, 0.07, 12), '#3a2c22', [cx + 0.3, 0.42, cz + s * 0.6], [Math.PI / 2, 0, 0]), part(new THREE.CylinderGeometry(0.06, 0.06, 0.1, 6), '#2a2622', [cx + 0.3, 0.42, cz + s * 0.65], [Math.PI / 2, 0, 0]));
+    ps.push(part(new THREE.BoxGeometry(1.1, 0.55, 0.7), '#5e3a24', [cx - 0.3, 0.9, cz], [0, 0.1, 0]), part(new THREE.BoxGeometry(0.8, 0.4, 0.55), '#8a6a3a', [cx + 0.45, 0.82, cz + 0.05], [0, -0.2, 0]),
+      part(new THREE.BoxGeometry(0.7, 0.3, 0.45), '#3e5a6a', [cx - 0.2, 1.33, cz], [0, 0.3, 0]));
+    for (const [x, z] of [[6.9, -2.0], [7.45, -1.75]]) ps.push(part(new THREE.CylinderGeometry(0.2, 0.24, 0.62, 10), '#aeb2b0', [x, 0.31, z]), part(new THREE.CylinderGeometry(0.12, 0.18, 0.18, 10), '#aeb2b0', [x, 0.7, z]), part(new THREE.CylinderGeometry(0.15, 0.15, 0.06, 10), '#8d918f', [x, 0.82, z]));
+    for (const s of [-1, 1]) ps.push(part(new THREE.CylinderGeometry(0.05, 0.06, 2.4, 6), '#2a3b2f', [14.6 + s * 1.3, 1.2, -2.0]));
+    scene.add(propMesh(ps));
+    const board = new THREE.Mesh(new THREE.PlaneGeometry(3.0, 0.56), new THREE.MeshLambertMaterial({ map: signTexture('WILLOW HOLLOW') }));
+    board.position.set(14.6, 2.1, -1.96); scene.add(board);
+
+    // The station building on the left
+    const sb = [], X0 = -17.5, Z0 = 0, F = 0;
+    sb.push(part(new THREE.BoxGeometry(8, 3.4, 4.4), '#8f5a44', [X0, F + 1.7, Z0]));
+    sb.push(part(new THREE.BoxGeometry(8.2, 0.25, 4.6), '#c8bba4', [X0, F + 0.12, Z0]), part(new THREE.BoxGeometry(8.2, 0.16, 4.6), '#c8bba4', [X0, F + 3.4, Z0]));
+    const rA = Math.atan2(1.8, 2.6);
+    for (const s of [-1, 1]) sb.push(part(new THREE.BoxGeometry(9.0, 0.16, 3.2), '#3d3f46', [X0, F + 3.4 + 0.9, Z0 + s * 1.3], [s * rA, 0, 0]));
+    sb.push(part(new THREE.BoxGeometry(0.7, 1.6, 0.7), '#7a4a38', [X0 - 2.2, F + 4.8, Z0 - 0.8]), part(new THREE.BoxGeometry(0.85, 0.12, 0.85), '#5a5a5a', [X0 - 2.2, F + 5.65, Z0 - 0.8]));
+    sb.push(part(new THREE.BoxGeometry(1.1, 2.2, 0.08), '#2f4a3a', [X0 + 1.6, F + 1.1, Z0 + 2.22]));
+    for (const wx0 of [X0 - 2.4, X0 - 0.4]) sb.push(part(new THREE.BoxGeometry(1.25, 1.45, 0.08), '#e8e0cc', [wx0, F + 1.75, Z0 + 2.21]));
+    sb.push(part(new THREE.BoxGeometry(4.2, 0.14, 1.4), '#2f4a3a', [X0 + 0.6, F + 2.85, Z0 + 2.85], [0.25, 0, 0]));   // a little canopy
+    scene.add(propMesh(sb));
+    L.winMat = new THREE.MeshBasicMaterial({ color: '#2a3036' });
+    for (const wx0 of [X0 - 2.4, X0 - 0.4]) { const w = new THREE.Mesh(new THREE.PlaneGeometry(1.05, 1.25), L.winMat); w.position.set(wx0, F + 1.75, Z0 + 2.26); scene.add(w); }
+    const sign2 = new THREE.Mesh(new THREE.PlaneGeometry(3.4, 0.5), new THREE.MeshLambertMaterial({ map: signTexture('WILLOW HOLLOW') }));
+    sign2.position.set(X0 + 0.2, F + 3.1, Z0 + 2.25); scene.add(sign2);
+
+    // Telegraph poles and wires beyond the track; an old signal
+    const poles = [], wires = [];
+    for (let x = -110; x <= 110; x += 22) {
+      const y = trainGround(x, -7.6);
+      poles.push(part(new THREE.CylinderGeometry(0.09, 0.12, 6.6, 6), '#5a4634', [x, y + 3.3, -7.6]), part(new THREE.BoxGeometry(0.1, 0.1, 1.6), '#5a4634', [x, y + 6.2, -7.6]));
+      if (x < 110) for (const dz of [-0.65, 0, 0.65]) for (let k = 0; k < 12; k++) {
+        const a = k / 12, b = (k + 1) / 12, y2 = trainGround(x + 22, -7.6);
+        const ya = lerp(y, y2, a) + 6.28 - 0.55 * Math.sin(Math.PI * a), yb = lerp(y, y2, b) + 6.28 - 0.55 * Math.sin(Math.PI * b);
+        wires.push(x + a * 22, ya, -7.6 + dz, x + b * 22, yb, -7.6 + dz);
+      }
+    }
+    poles.push(part(new THREE.CylinderGeometry(0.08, 0.1, 5, 6), '#3a3a3a', [29, 2, -6.6]), part(new THREE.BoxGeometry(1.4, 0.22, 0.06), '#b0302a', [29.6, 4.0, -6.6], [0, 0, -0.5]));
+    scene.add(propMesh(poles));
+    const wg = new THREE.BufferGeometry(); wg.setAttribute('position', new THREE.Float32BufferAttribute(wires, 3));
+    scene.add(new THREE.LineSegments(wg, new THREE.LineBasicMaterial({ color: '#2a2a2a', transparent: true, opacity: 0.6 })));
+    L.signal = new THREE.Sprite(glowMat('#ff4a3a')); L.signal.position.set(29, 4.4, -6.5); L.signal.scale.setScalar(1.2); scene.add(L.signal);
+
+    // A village on the far hill (windows light up at night) and trees along the hedgerows
+    const vx = -70, vz = -175, vh = [], vl = [];
+    for (let i = 0; i < 16; i++) {
+      const x = vx + srange(-28, 28), z = vz + srange(-18, 14), y = trainGround(x, z) - 0.3, w = srange(5, 8), d = srange(4, 6), h = srange(3.5, 5.5), ry = srange(-0.3, 0.3);
+      vh.push(part(new THREE.BoxGeometry(w, h, d), srand() < 0.5 ? '#e8e0cc' : '#d8c8a8', [x, y + h / 2, z], [0, ry, 0]), part(new THREE.ConeGeometry(Math.max(w, d) * 0.72, 2.6, 4), '#7a3a2e', [x, y + h + 1.3, z], [0, ry + Math.PI / 4, 0], [1, 1, d / w]));
+      for (let k = 0; k < 2; k++) vl.push(x + srange(-w / 3, w / 3), y + h * 0.5, z + d / 2 + 0.3);
+    }
+    const chy = trainGround(vx + 6, vz - 4);
+    vh.push(part(new THREE.BoxGeometry(5, 7, 9), '#d8d2c4', [vx + 6, chy + 3.5, vz - 4]), part(new THREE.BoxGeometry(2.6, 12, 2.6), '#d8d2c4', [vx + 6, chy + 6, vz + 1]), part(new THREE.ConeGeometry(1.9, 5, 4), '#5a5e66', [vx + 6, chy + 14.5, vz + 1], [0, Math.PI / 4, 0]));
+    scene.add(propMesh(vh, { shadow: false }));
+    const vg = new THREE.BufferGeometry(); vg.setAttribute('position', new THREE.Float32BufferAttribute(vl, 3));
+    L.villageLights = new THREE.Points(vg, new THREE.PointsMaterial({ map: glowTex, color: '#ffc070', size: 3.2, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0 }));
+    scene.add(L.villageLights);
+    const o = oakParts(1, { detail: 0 });
+    const tspots = scatter(5000, -480, 480, -560, -40, (x, z) => {
+      const ca = Math.cos(0.3), sa = Math.sin(0.3), u = (x * ca - z * sa) / 44, v = (x * sa + z * ca) / 30;
+      if (Math.hypot(x - vx, z - vz) < 34) return false;
+      return (u - Math.floor(u) < 0.08 || v - Math.floor(v) < 0.12) ? srand() < 0.45 : srand() < 0.03;
+    }).slice(0, Math.round(600 * LOD));
+    forest(mergeParts([...o.trunk, ...o.crown]), tspots.map(([x, z]) => ({ x, z, y: trainGround(x, z) - 0.2, s: srange(7, 12), rot: srand() * 6, tint: srange(0.8, 1.1) })));
+    framingTree('oak', -11.4, -8.8, 8.0, 0.4, { leaves: ['#5a8a3c', '#6a9a44', '#4e7a34'] });
+    framingTree('oak', -16.0, -10.2, 6.8, 1.6, { leaves: ['#5a8a3c', '#6a9a44', '#4e7a34'] });
+    framingTree('oak', 12.8, -8.6, 8.4, 2.6, { leaves: ['#5a8a3c', '#6a9a44', '#4e7a34'] });
+
+    // Grass in front, weeds between the slabs, grass beyond the track
+    const clear = CLEAR_SPOTS();
+    grassField(tuftGeo(4, '#3e6a2a', '#a9c766'), scatter(Math.round(2600 * LOD), -26, 26, 4.9, 14, () => srand() < 0.85).concat(scatter(600, -9, 9, 13, 20, () => true))
+      .concat(scatter(Math.round(1600 * LOD), -30, 30, -16, -6.6, () => true)), { size: [0.3, 0.55] });
+    grassField(tuftGeo(3, '#4a6a2a', '#8aa24a', { w: 0.05 }), scatter(220, -24, 24, -2.4, 4.4, (x, z) => clearOf(x, z, clear, 0.3) && Math.abs(x + 17.5) > 4.5), { size: [0.12, 0.28] });
+
+    // The train: a steam engine, its tender and four carriages. It passes now and then (lit windows at night).
+    const tr = [], panes = [];
+    tr.push(part(new THREE.BoxGeometry(10, 0.35, 2.3), '#1c1c1c', [-5, 0.75, 0]));
+    tr.push(part(new THREE.CylinderGeometry(0.82, 0.82, 6.6, 14), '#2c4a3a', [-4.4, 1.95, 0], [0, 0, Math.PI / 2]));
+    tr.push(part(new THREE.CylinderGeometry(0.86, 0.86, 1.1, 14), '#1d1d1d', [-0.9, 1.95, 0], [0, 0, Math.PI / 2]));
+    for (const x of [-2.4, -4.4, -6.4]) tr.push(part(new THREE.CylinderGeometry(0.85, 0.85, 0.1, 14), '#c9a24a', [x, 1.95, 0], [0, 0, Math.PI / 2]));
+    tr.push(part(new THREE.CylinderGeometry(0.24, 0.3, 1.0, 10), '#1b1b1b', [-1.2, 3.1, 0]), part(new THREE.CylinderGeometry(0.36, 0.26, 0.25, 10), '#1b1b1b', [-1.2, 3.65, 0]));
+    tr.push(part(new THREE.SphereGeometry(0.42, 10, 6), '#c9a24a', [-4.2, 2.75, 0], [0, 0, 0], [1, 0.7, 1]));
+    tr.push(part(new THREE.BoxGeometry(2.6, 2.5, 2.6), '#2c4a3a', [-8.8, 2.3, 0]), part(new THREE.BoxGeometry(3.0, 0.16, 3.0), '#1b1b1b', [-8.8, 3.62, 0]));
+    tr.push(part(new THREE.BoxGeometry(0.4, 0.5, 2.6), '#a8302a', [0.15, 0.85, 0]), part(new THREE.ConeGeometry(0.75, 0.8, 4), '#1d1d1d', [0.5, 0.45, 0], [0, 0, -Math.PI / 2], [1, 1, 1.6]));
+    tr.push(part(new THREE.BoxGeometry(0.3, 0.32, 0.36), '#1b1b1b', [-0.25, 2.95, 0]));
+    for (const s of [-1, 1]) {
+      for (const x of [-3.3, -5.0, -6.7]) tr.push(part(new THREE.CylinderGeometry(0.72, 0.72, 0.14, 16), '#8a2a22', [x, 0.72, s * 1.2], [Math.PI / 2, 0, 0]));
+      tr.push(part(new THREE.CylinderGeometry(0.42, 0.42, 0.14, 12), '#8a2a22', [-1.5, 0.42, s * 1.2], [Math.PI / 2, 0, 0]));
+      tr.push(part(new THREE.BoxGeometry(3.6, 0.1, 0.06), '#b8b8b0', [-5.0, 0.72, s * 1.32]));
+    }
+    panes.push(part(new THREE.BoxGeometry(0.8, 0.7, 0.02), '#ffffff', [-8.6, 2.65, 1.31]));
+    tr.push(part(new THREE.BoxGeometry(4.8, 2.0, 2.5), '#2c4a3a', [-13.0, 1.6, 0]), part(new THREE.BoxGeometry(4.4, 0.4, 2.1), '#151515', [-13.0, 2.7, 0]));
+    for (const s of [-1, 1]) for (const x of [-11.6, -14.4]) tr.push(part(new THREE.CylinderGeometry(0.45, 0.45, 0.14, 12), '#8a2a22', [x, 0.45, s * 1.15], [Math.PI / 2, 0, 0]));
+    const carCols = ['#6e2a2a', '#2c4a3a', '#6e2a2a', '#2c4a3a'];
+    for (let ci = 0; ci < 4; ci++) {
+      const x1 = -16.3 - ci * 13.8, xc = x1 - 6.5;
+      tr.push(part(new THREE.BoxGeometry(13, 2.4, 2.7), carCols[ci], [xc, 2.0, 0]));
+      tr.push(part(new THREE.CylinderGeometry(1, 1, 13.2, 12, 1, false, 0, Math.PI), '#2a2a2a', [xc, 3.2, 0], [0, 0, Math.PI / 2], [0.38, 1, 1.42]));
+      tr.push(part(new THREE.BoxGeometry(13.05, 0.1, 2.75), '#c9a24a', [xc, 1.3, 0]), part(new THREE.BoxGeometry(12.4, 0.5, 2.2), '#1b1b1b', [xc, 0.6, 0]));
+      for (const s of [-1, 1]) for (const bx2 of [xc - 4.6, xc + 4.6]) for (const dx of [-0.8, 0.8]) tr.push(part(new THREE.CylinderGeometry(0.42, 0.42, 0.12, 12), '#2a2a2a', [bx2 + dx, 0.42, s * 1.1], [Math.PI / 2, 0, 0]));
+      for (let w = 0; w < 8; w++) panes.push(part(new THREE.BoxGeometry(0.95, 0.85, 0.02), '#ffffff', [x1 - 1.2 - w * 1.5, 2.25, 1.36]));
+    }
+    L.train = new THREE.Group();
+    const trainMesh = propMesh(tr, { receive: false }); trainMesh.castShadow = false; L.train.add(trainMesh);
+    L.paneMat = new THREE.MeshBasicMaterial({ vertexColors: true });
+    L.train.add(new THREE.Mesh(mergeParts(panes), L.paneMat));
+    L.head = new THREE.Sprite(glowMat('#ffe0a0')); L.head.position.set(0.0, 2.95, 0.2); L.head.scale.setScalar(3.2); L.train.add(L.head);
+    L.train.position.set(-200, -0.5, TRACK_Z); L.train.visible = false; scene.add(L.train);
+    L.steam = makePuffs(18, '#e4e4e4', 3);
+    for (const p of L.steam) { p.life = 1 + p.life; p.ox = p.oy = p.oz = 0; }
+    L.next = rand(20, 45); L.run = -1; L.waved = false;
+
+    placeRug(rugTexture((g) => {
+      g.fillStyle = '#2f4a6a'; g.fillRect(0, 0, 64, 64);
+      g.fillStyle = 'rgba(40,90,60,0.6)'; g.fillRect(0, 0, 64, 20); g.fillRect(0, 0, 20, 64);
+      g.fillStyle = 'rgba(200,60,50,0.7)'; g.fillRect(28, 0, 3, 64); g.fillRect(0, 28, 64, 3);
+      g.fillStyle = 'rgba(240,210,120,0.5)'; g.fillRect(44, 0, 2, 64); g.fillRect(0, 44, 64, 2);
+    }), 1.6, 2.3, 0.35, [2, 3]);
+    this.L = L;
+  },
+  seat(def) {
+    if (def.pose === 'rockSit') return crateSeat(SEAT_TOP.rockSit);
+    const top = SEAT_TOP.rockLegUp;   // an old leather trunk with straps and brass corners
+    const ps = [part(new THREE.BoxGeometry(1.0, top - 0.06, 0.7), '#5e3a24', [0, (top - 0.06) / 2, 0]), part(new THREE.BoxGeometry(1.04, 0.1, 0.74), '#4a2c1a', [0, top - 0.05, 0])];
+    for (const x of [-0.28, 0.28]) ps.push(part(new THREE.BoxGeometry(0.08, top + 0.01, 0.74), '#2e2018', [x, top / 2, 0]));
+    for (const x of [-0.5, 0.5]) for (const z of [-0.35, 0.35]) ps.push(part(new THREE.BoxGeometry(0.08, 0.08, 0.08), '#c9a24a', [x, top - 0.04, z]));
+    return seatMesh(ps, top);
+  },
+  update(t, dt) {
+    const L = this.L, night = env.fireOn, fl = 0.95 + 0.05 * noise1(t * 2.3);
+    L.lampGlass.color.set('#4a4436').lerp(_c1.set('#ffd38a'), night * fl);
+    L.lampGlows.forEach((s) => { s.material.opacity = night * 0.85 * fl; });
+    L.lampPools.forEach((p) => { p.material.opacity = night * 0.32 * fl; });
+    L.winMat.color.set('#2a3036').lerp(_c1.set('#ffbe6a'), Math.max(night, 0.15));
+    L.villageLights.material.opacity = smooth(0.3, 0.8, env.night) * 0.9;
+    L.signal.material.opacity = 0.25 + 0.6 * night;
+    // the train
+    const SPEED = 13, start = -110, end = 185;
+    if (L.run < 0 && t > L.next) { L.run = 0; L.waved = false; L.train.visible = true; }
+    if (L.run >= 0) {
+      L.run += dt;
+      const x = start + L.run * SPEED;
+      L.train.position.x = x;
+      L.train.position.y = -0.5 + 0.012 * Math.sin(L.run * 9);
+      L.paneMat.color.set('#3a4048').lerp(_c1.set('#ffd08a'), Math.max(night, 0.08));
+      L.head.material.opacity = 0.3 + 0.7 * night;
+      if (!L.waved && x > -14) { L.waved = true; if (waver && !waver.st.dozing && waver.st.waveStart < 0 && Math.random() < 0.7) waver.st.waveStart = t; }
+      if (x - 72 > end) { L.run = -1; L.train.visible = false; L.next = t + rand(70, 160) / Math.max(0.4, calm().activity); }
+    }
+    // steam: puffs leave the chimney and hang behind the moving train
+    for (const p of L.steam) {
+      p.life += dt / 3.5;
+      if (p.life >= 1 && L.run >= 0) { p.life -= Math.floor(p.life); p.ox = L.train.position.x - 1.2; p.oy = L.train.position.y + 3.8; p.oz = TRACK_Z; p.ph = Math.random() * 50; }
+      p.sp.visible = p.life < 1;
+      if (!p.sp.visible) continue;
+      const k = p.life;
+      p.sp.position.set(p.ox - k * 2.5 + env.wind * k * 3, p.oy + (1 - Math.pow(1 - k, 1.6)) * 4, p.oz + fbm1(k + p.ph) * 0.6);
+      p.sp.scale.setScalar(1.0 + k * 3.2);
+      p.sp.material.color.set('#e8e8e6').multiplyScalar(0.35 + 0.65 * env.day);
+      p.sp.material.opacity = (0.22 + 0.3 * env.day) * Math.pow(Math.sin(Math.PI * k), 1.1);
+    }
+  },
+};
+
+// ======================= Sailboat at sea =======================
+SCENE_BUILD.boat = {
+  build() {
+    const L = {}, D = HULL.deck, cz = HULL.cz, ps = [];
+    // two white hulls with a navy stripe; a teak deck across them
+    for (const hz of [cz + HULL.hz - 0.65, cz - HULL.hz + 0.65]) {
+      ps.push(part(new THREE.SphereGeometry(1, 24, 10), '#f2f0ea', [0, -0.3, hz], [0, 0, 0], [8.6, 0.72, 0.85], 0.02));
+      ps.push(part(new THREE.SphereGeometry(1, 24, 6), '#1f3a5f', [0, -0.12, hz], [0, 0, 0], [8.62, 0.06, 0.86], 0.02));
+    }
+    for (let z = cz - HULL.hz; z < cz + HULL.hz - 0.01; z += 0.2) ps.push(part(new THREE.BoxGeometry(HULL.hx * 2 - 0.2, 0.16, 0.19), srand() < 0.5 ? '#b98a5a' : '#a97a4c', [0, D - 0.08, z + 0.1], [0, 0, 0], 1, 0.06));
+    ps.push(part(new THREE.BoxGeometry(HULL.hx * 2, 0.14, HULL.hz * 2 + 0.1), '#e8e4dc', [0, D - 0.2, cz]));
+    // the cabin behind them, with portholes
+    ps.push(part(new THREE.BoxGeometry(6.2, 1.0, 1.7), '#f2f0ea', [0.4, D + 0.5, cz - 2.05]), part(new THREE.BoxGeometry(6.4, 0.12, 1.9), '#d9d4c8', [0.4, D + 1.04, cz - 2.05]));
+    // mast, boom with the sail furled under a cover, a lifebuoy, the helm, rails at bow and stern
+    const mx = -0.2, mz = cz - 2.05, top = 15.5;
+    ps.push(part(new THREE.CylinderGeometry(0.07, 0.1, top - D, 8), '#d4d6d8', [mx, (top + D) / 2, mz]));
+    ps.push(part(new THREE.CylinderGeometry(0.07, 0.07, 6.2, 8), '#d4d6d8', [mx - 3.1, D + 2.9, mz], [0, 0, Math.PI / 2]));
+    ps.push(part(new THREE.CapsuleGeometry(0.22, 5.4, 4, 10), '#2a3f63', [mx - 3.1, D + 3.15, mz], [0, 0, Math.PI / 2], [1, 1, 0.9]));
+    ps.push(part(new THREE.TorusGeometry(0.3, 0.07, 6, 14), '#ff7a2a', [2.6, D + 0.55, cz - 1.18]));
+    ps.push(part(new THREE.TorusGeometry(0.4, 0.035, 5, 16), '#7a5232', [-6.4, D + 1.0, cz - 1.0], [0, Math.PI / 2, 0]), part(new THREE.CylinderGeometry(0.03, 0.03, 0.8, 5), '#7a5232', [-6.4, D + 1.0, cz - 1.0]));
+    ps.push(part(new THREE.CylinderGeometry(0.04, 0.04, 0.8, 5), '#7a5232', [-6.4, D + 1.0, cz - 1.0], [Math.PI / 2, 0, 0]), part(new THREE.CylinderGeometry(0.05, 0.05, 1.0, 5), '#8a8a8a', [-6.4, D + 0.5, cz - 1.0]));
+    for (const x of [7.4, -7.4]) for (const s of [-1, 1]) ps.push(part(new THREE.CylinderGeometry(0.025, 0.025, 0.7, 5), '#c8ccd0', [x, D + 0.35, cz + s * (HULL.hz - 0.4)]));
+    for (const x of [7.4, -7.4]) ps.push(part(new THREE.CylinderGeometry(0.025, 0.025, HULL.hz * 2 - 0.8, 5), '#c8ccd0', [x, D + 0.7, cz], [Math.PI / 2, 0, 0]));
+    ps.push(part(new THREE.CylinderGeometry(0.035, 0.035, 2.2, 5), '#3a3a3a', [8.3, -0.55, cz + 0.4], [0, 0, -0.75]));   // anchor chain
+    // the fire sits in an iron bowl on a stone tile
+    ps.push(part(new THREE.BoxGeometry(2.0, 0.05, 1.8), '#8a8680', [FIRE_POS.x, D + 0.02, FIRE_POS.z - 0.05]));
+    ps.push(part(new THREE.CylinderGeometry(0.88, 0.6, 0.24, 16, 1, true), '#3a3532', [FIRE_POS.x, D + 0.15, FIRE_POS.z]), part(new THREE.CylinderGeometry(0.6, 0.6, 0.03, 16), '#2a2624', [FIRE_POS.x, D + 0.04, FIRE_POS.z]));
+    scene.add(propMesh(ps));
+    // portholes glow warm at night
+    L.glass = new THREE.MeshBasicMaterial({ color: '#2a3340' });
+    for (const x of [-1.8, -0.2, 1.4, 3.0]) { const w = new THREE.Mesh(new THREE.CircleGeometry(0.17, 12), L.glass); w.position.set(x, D + 0.52, cz - 1.19); scene.add(w); }
+    // rigging, with warm string lights along the forestay and backstay
+    const mast = [mx, top, mz], stays = [[mast, [7.9, D + 0.4, cz]], [mast, [-7.6, D + 0.6, cz - 1.0]], [mast, [mx, D + 0.3, cz + HULL.hz - 0.5]], [mast, [mx, D + 0.3, cz - HULL.hz + 0.3]]];
+    const rig = [];
+    for (const [a, b] of stays) rig.push(...a, ...b);
+    const rg = new THREE.BufferGeometry(); rg.setAttribute('position', new THREE.Float32BufferAttribute(rig, 3));
+    scene.add(new THREE.LineSegments(rg, new THREE.LineBasicMaterial({ color: '#3a3c40', transparent: true, opacity: 0.8 })));
+    const bulbs = [];
+    for (const [a, b] of stays.slice(0, 2)) for (let k = 2; k < 22; k++) { const u = k / 22; bulbs.push(lerp(a[0], b[0], u), lerp(a[1], b[1], u) - 0.12 * Math.sin(Math.PI * ((k % 3) / 3)), lerp(a[2], b[2], u)); }
+    const bg = new THREE.BufferGeometry(); bg.setAttribute('position', new THREE.Float32BufferAttribute(bulbs, 3));
+    L.bulbs = new THREE.Points(bg, new THREE.PointsMaterial({ map: glowTex, color: '#ffcf8a', size: 0.55, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, opacity: 0 }));
+    L.bulbs.renderOrder = 4; scene.add(L.bulbs);
+    L.bulbDots = new THREE.Points(bg, new THREE.PointsMaterial({ color: '#fff0d0', size: 0.07, transparent: true, opacity: 0.5 })); scene.add(L.bulbDots);
+    // a lantern hanging from the boom, the masthead light and the green starboard light
+    L.lantern = new THREE.Sprite(glowMat('#ffb456')); L.lantern.position.set(mx - 3.6, D + 2.45, mz); L.lantern.scale.setScalar(2.0); scene.add(L.lantern);
+    const lan = propMesh([part(new THREE.BoxGeometry(0.16, 0.22, 0.16), '#3a3226', [0, 0, 0]), part(new THREE.CylinderGeometry(0.01, 0.01, 0.42, 4), '#2a2826', [0, 0.32, 0])]);
+    lan.position.copy(L.lantern.position); scene.add(lan); L.lanBox = lan;
+    L.masthead = new THREE.Sprite(glowMat('#fff6e0')); L.masthead.position.set(mx, top + 0.15, mz); L.masthead.scale.setScalar(1.4); scene.add(L.masthead);
+    L.green = new THREE.Sprite(glowMat('#40ff70')); L.green.position.set(6.6, D + 0.5, cz + HULL.hz); L.green.scale.setScalar(0.5); scene.add(L.green);
+    // a little flag at the stern
+    L.flag = new THREE.Mesh(new THREE.PlaneGeometry(0.7, 0.45).translate(0.35, 0, 0), new THREE.MeshLambertMaterial({ color: '#c0392b', side: THREE.DoubleSide }));
+    const fp = propMesh([part(new THREE.CylinderGeometry(0.025, 0.025, 1.4, 5), '#c8ccd0', [0, 0.7, 0])]); fp.position.set(-7.6, D, cz - 1.0); scene.add(fp);
+    L.flag.position.set(-7.6, D + 1.2, cz - 1.0); L.flag.rotation.y = Math.PI; scene.add(L.flag);
+
+    // Distant islands, one with a lighthouse
+    BOAT_ISLANDS.forEach((G, gi) => {
+      const grp = new THREE.Group();
+      G.parts.forEach(([x, z, w, h, d, c]) => {
+        const r = makeRock(w, h, d, c, 1, G.flatTop); r.castShadow = r.receiveShadow = false; r.position.set(x, G.base, z); grp.add(r);
+        const e = BOAT_SHORES.find((q) => q.x === G.x + x && q.z === G.z + z);
+        const shelf = makeRock(e.rx, 1.0, e.rz, '#5f5a52', 1, true); shelf.castShadow = shelf.receiveShadow = false; shelf.position.set(x, -0.75, z); grp.add(shelf);
+      });
+      grp.position.set(G.x, 0, G.z); scene.add(grp);
+      if (gi === 0) {
+        const [x, z, , h] = G.parts[0], ty = G.base + h * 0.95 + 0.3, lh = [];
+        for (let k = 0; k < 4; k++) lh.push(part(new THREE.CylinderGeometry(1.5 - k * 0.12 - 0.12, 1.5 - k * 0.12, 2.6, 10), k % 2 ? '#c0392b' : '#f2f0ea', [0, ty + 1.3 + k * 2.6, 0]));
+        lh.push(part(new THREE.CylinderGeometry(1.4, 1.4, 0.2, 10), '#2a2a2a', [0, ty + 10.5, 0]), part(new THREE.ConeGeometry(1.2, 1.4, 10), '#2a2a2a', [0, ty + 12.5, 0]));
+        const lm = propMesh(lh, { shadow: false }); lm.position.set(G.x + x, 0, G.z + z); scene.add(lm);
+        L.beam = new THREE.Sprite(glowMat('#fff2c0')); L.beam.position.set(G.x + x, ty + 11.4, G.z + z + 1); L.beam.scale.setScalar(30); scene.add(L.beam);
+      }
+    });
+    // Dolphins that leap now and then
+    const dgeo = mergeParts([part(new THREE.SphereGeometry(1, 12, 8), '#6f8494', [0, 0, 0], [0, 0, 0], [1.1, 0.32, 0.3]), part(new THREE.SphereGeometry(1, 8, 6), '#c9d3da', [0.1, -0.12, 0], [0, 0, 0], [0.8, 0.16, 0.22]),
+      part(new THREE.ConeGeometry(0.16, 0.42, 4), '#5f7484', [-0.05, 0.36, 0], [0, 0, 0.5], [1, 1, 0.3]), part(new THREE.ConeGeometry(0.1, 0.4, 4), '#6f8494', [1.25, 0.0, 0], [0, 0, -Math.PI / 2], [1, 1, 0.5]),
+      part(new THREE.BoxGeometry(0.2, 0.04, 0.7), '#5f7484', [-1.15, 0, 0])]);
+    L.dolphins = [0, 1, 2].map(() => { const m = new THREE.Mesh(dgeo, VCOL); m.scale.setScalar(1.35); m.visible = false; scene.add(m); return m; });
+    L.splash = makePuffs(8, '#ffffff', 3);
+    for (const p of L.splash) p.life = 1;
+    L.jumpAt = rand(15, 35); L.jump = null;
+    // a navy-and-white striped blanket
+    placeRug(rugTexture((g) => { g.fillStyle = '#f2efe6'; g.fillRect(0, 0, 64, 64); g.fillStyle = '#23395b'; for (let y = 0; y < 64; y += 16) g.fillRect(0, y, 64, 8); }), 1.6, 2.3, 0.35, [1, 2]);
+    this.L = L;
+  },
+  seat(def) { return def.pose === 'rockSit' ? barrelSeat(SEAT_TOP.rockSit) : crateSeat(SEAT_TOP.rockLegUp); },
+  update(t, dt) {
+    const L = this.L, night = env.fireOn;
+    // the sea rocks gently round the boat (as if we're aboard)
+    if (this.waterMesh) { this.waterMesh.rotation.z = 0.012 * Math.sin(t * 0.55) + 0.005 * Math.sin(t * 1.3); this.waterMesh.rotation.x = 0.008 * Math.sin(t * 0.43 + 1); }
+    L.glass.color.set('#2a3340').lerp(_c1.set('#ffbe6a'), night * (0.95 + 0.05 * fbm1(t * 0.7)));
+    const on = smooth(0.1, 0.6, night);
+    L.bulbs.material.opacity = on * 0.85; L.bulbDots.material.opacity = 0.35 + 0.6 * on;
+    L.lantern.material.opacity = night * 0.85 * (0.94 + 0.06 * noise1(t * 3.3));
+    L.lanBox.rotation.z = 0.06 * Math.sin(t * 0.55 + 0.5);
+    L.masthead.material.opacity = night * 0.7; L.green.material.opacity = night * 0.55;
+    L.flag.rotation.y = Math.PI + 0.25 * Math.sin(t * 2.1) * (0.4 + env.wind) + 0.1 * Math.sin(t * 5.3);
+    if (L.beam) L.beam.material.opacity = smooth(0.3, 0.8, env.night) * (0.12 + 0.88 * Math.pow(Math.max(0, Math.cos(t * 1.05)), 24));
+    // dolphins: by day, a little pod leaps in a row now and then
+    if (!L.jump && t > L.jumpAt && env.day > 0.3) L.jump = { t0: t, x: rand(-25, 15), z: rand(-44, -24), dir: Math.random() < 0.5 ? 1 : -1, sp: [] };
+    if (L.jump) {
+      const J = L.jump; let any = false;
+      L.dolphins.forEach((d, i) => {
+        const k = (t - J.t0 - i * 0.45) / 1.5;
+        d.visible = k > 0 && k < 1;
+        if (k < 1) any = true;
+        if (!d.visible) return;
+        d.position.set(J.x + J.dir * (k * 7 + i * 1.3), -0.6 + 2.0 * Math.sin(Math.PI * k), J.z + i * 0.8);
+        d.rotation.set(0, J.dir > 0 ? 0 : Math.PI, Math.atan(2.0 * Math.PI * Math.cos(Math.PI * k) / 7) * 0.8);
+        for (const [edge, key] of [[0.06, 'in' + i], [0.94, 'out' + i]]) if (k > edge && !J.sp.includes(key)) { J.sp.push(key); const p = L.splash.find((q) => q.life >= 1); if (p) { p.life = 0; p.x = d.position.x; p.z = d.position.z; } }
+      });
+      if (!any) { L.jump = null; L.jumpAt = t + rand(30, 75); }
+    }
+    for (const p of L.splash) {
+      if (p.life >= 1) { p.sp.visible = false; continue; }
+      p.life += dt; p.sp.visible = true;
+      p.sp.position.set(p.x, -0.2 + p.life * 0.8, p.z); p.sp.scale.setScalar(0.6 + p.life * 1.6);
+      p.sp.material.color.set('#ffffff').multiplyScalar(0.4 + 0.6 * env.day);
+      p.sp.material.opacity = 0.7 * (1 - p.life);
     }
   },
 };
@@ -4155,7 +4814,7 @@ function layoutTallScene() {
     const show = !tall || (spot && S.TALL_PALMS);
     pm.g.visible = pm.blob.visible = !!show;
     if (spot) {
-      let [x, z] = [clamp(spot[0], -12, 12), clamp(spot[1], -4, 6)];
+      let [x, z] = [clamp(spot[0] + (i ? 1 : -1) * (PLACE.treePad || 0), -12, 12), clamp(spot[1], -4, 6)];
       if (PLACE.treeSpot) [x, z] = PLACE.treeSpot(x, z);
       pm.g.position.set(x, sandHeight(x, z) - 0.05, z);
       pm.g.scale.setScalar(clamp(S.TALL_PALM_SIZE, 0.5, 1.6));
@@ -4256,7 +4915,7 @@ window.__wallpaperVisible = (v) => {
   if (away > 60000 && waver && !waver.st.dozing && waver.st.waveStart < 0) { waver.st.waveStart = simTime + 0.6; waver.st.youUntil = simTime + 3.6; }
 };
 // Wallpaper: settings changed in the app's own screen apply here too.
-if (WALLPAPER) addEventListener('storage', (e) => { if (e.key === 'beachSettings') location.reload(); });
+if (WALLPAPER) addEventListener('storage', (e) => { if (e.key === 'beachSettings') reloadPage(); });
 // If the GPU drops the page's graphics: step down a quality level, remember it, and wait for the
 // browser to hand the graphics back, then carry on in place (three.js re-uploads everything itself).
 let contextLost = false, restoreTimer = 0;
@@ -4297,14 +4956,14 @@ function applyGfx(g) {
 // ---------------------------------------------------------------------
 const PANEL_GROUPS = [
   ['Scenes', [
-    { k: 'SCENE', label: 'Scene', options: [['auto', 'Changes each day'], ['beach', 'Beach'], ['lake', 'Mountain lake'], ['cabin', 'Snowy cabin'], ['meadow', 'Hilltop meadow']] },
-    { k: 'SCENE_SUNDAY', label: 'Sunday', options: [['beach', 'Beach'], ['lake', 'Lake'], ['cabin', 'Cabin'], ['meadow', 'Meadow']] },
-    { k: 'SCENE_MONDAY', label: 'Monday', options: [['beach', 'Beach'], ['lake', 'Lake'], ['cabin', 'Cabin'], ['meadow', 'Meadow']] },
-    { k: 'SCENE_TUESDAY', label: 'Tuesday', options: [['beach', 'Beach'], ['lake', 'Lake'], ['cabin', 'Cabin'], ['meadow', 'Meadow']] },
-    { k: 'SCENE_WEDNESDAY', label: 'Wednesday', options: [['beach', 'Beach'], ['lake', 'Lake'], ['cabin', 'Cabin'], ['meadow', 'Meadow']] },
-    { k: 'SCENE_THURSDAY', label: 'Thursday', options: [['beach', 'Beach'], ['lake', 'Lake'], ['cabin', 'Cabin'], ['meadow', 'Meadow']] },
-    { k: 'SCENE_FRIDAY', label: 'Friday', options: [['beach', 'Beach'], ['lake', 'Lake'], ['cabin', 'Cabin'], ['meadow', 'Meadow']] },
-    { k: 'SCENE_SATURDAY', label: 'Saturday', options: [['beach', 'Beach'], ['lake', 'Lake'], ['cabin', 'Cabin'], ['meadow', 'Meadow']] },
+    { k: 'SCENE', label: 'Scene', options: [['auto', 'Changes each day'], ['beach', 'Beach'], ['lake', 'Mountain lake'], ['cabin', 'Snowy cabin'], ['meadow', 'Hilltop meadow'], ['jungle', 'Jungle waterfall'], ['train', 'Old train platform'], ['boat', 'Sailboat at sea']] },
+    { k: 'SCENE_SUNDAY', label: 'Sunday', options: [['beach', 'Beach'], ['lake', 'Lake'], ['cabin', 'Cabin'], ['meadow', 'Meadow'], ['jungle', 'Jungle'], ['train', 'Train'], ['boat', 'Boat']] },
+    { k: 'SCENE_MONDAY', label: 'Monday', options: [['beach', 'Beach'], ['lake', 'Lake'], ['cabin', 'Cabin'], ['meadow', 'Meadow'], ['jungle', 'Jungle'], ['train', 'Train'], ['boat', 'Boat']] },
+    { k: 'SCENE_TUESDAY', label: 'Tuesday', options: [['beach', 'Beach'], ['lake', 'Lake'], ['cabin', 'Cabin'], ['meadow', 'Meadow'], ['jungle', 'Jungle'], ['train', 'Train'], ['boat', 'Boat']] },
+    { k: 'SCENE_WEDNESDAY', label: 'Wednesday', options: [['beach', 'Beach'], ['lake', 'Lake'], ['cabin', 'Cabin'], ['meadow', 'Meadow'], ['jungle', 'Jungle'], ['train', 'Train'], ['boat', 'Boat']] },
+    { k: 'SCENE_THURSDAY', label: 'Thursday', options: [['beach', 'Beach'], ['lake', 'Lake'], ['cabin', 'Cabin'], ['meadow', 'Meadow'], ['jungle', 'Jungle'], ['train', 'Train'], ['boat', 'Boat']] },
+    { k: 'SCENE_FRIDAY', label: 'Friday', options: [['beach', 'Beach'], ['lake', 'Lake'], ['cabin', 'Cabin'], ['meadow', 'Meadow'], ['jungle', 'Jungle'], ['train', 'Train'], ['boat', 'Boat']] },
+    { k: 'SCENE_SATURDAY', label: 'Saturday', options: [['beach', 'Beach'], ['lake', 'Lake'], ['cabin', 'Cabin'], ['meadow', 'Meadow'], ['jungle', 'Jungle'], ['train', 'Train'], ['boat', 'Boat']] },
   ]],
   ['Calm', [
     { k: 'ACTIVITY_PRESET', label: 'Activity', options: [['lively', 'Lively (original)'], ['calm', 'Calm'], ['sleepy', 'Sleepy'], ['custom', 'Custom']] },
@@ -4461,7 +5120,7 @@ const hexToHsl = (hex) => { const c = new THREE.Color(hex), o = {}; c.getHSL(o, 
   const bootUntil = performance.now() + 4000;
   let reloadTimer = 0;
   function onLivelyProp(name, val) {
-    if (name === 'b_reset') { try { localStorage.removeItem('beachSettings'); localStorage.removeItem(SEEN_KEY); } catch {} location.reload(); return; }
+    if (name === 'b_reset') { try { localStorage.removeItem('beachSettings'); localStorage.removeItem(SEEN_KEY); } catch {} reloadPage(); return; }
     if (sameSetting(seen[name], val)) return;
     const first = !(name in seen);
     seen[name] = val; try { localStorage.setItem(SEEN_KEY, JSON.stringify(seen)); } catch {}
@@ -4479,7 +5138,7 @@ const hexToHsl = (hex) => { const c = new THREE.Color(hex), o = {}; c.getHSL(o, 
       change = { CHARACTER_COLORS: { ...S.CHARACTER_COLORS, [who]: { ...S.CHARACTER_COLORS[who], [part]: hsl } } };
     } else return;
     applySettings(change);
-    if (needsReload) { clearTimeout(reloadTimer); reloadTimer = setTimeout(() => location.reload(), performance.now() < bootUntil ? 1500 : 400); }
+    if (needsReload) { clearTimeout(reloadTimer); reloadTimer = setTimeout(() => reloadPage(), performance.now() < bootUntil ? 1500 : 400); }
     if (window.__panelRebuild) window.__panelRebuild();
   }
   const L = window.__lively;
@@ -4577,8 +5236,8 @@ const hexToHsl = (hex) => { const c = new THREE.Color(hex), o = {}; c.getHSL(o, 
     }
 
     const actions = el('div', { className: 'actions' });
-    if (needsReload) actions.append(btn('Reload to apply', () => location.reload(), 'btn primary'));
-    actions.append(btn('Reset to file values', () => { try { localStorage.removeItem('beachSettings'); } catch {} location.reload(); }));
+    if (needsReload) actions.append(btn('Reload to apply', () => reloadPage(), 'btn primary'));
+    actions.append(btn('Reset to file values', () => { try { localStorage.removeItem('beachSettings'); } catch {} reloadPage(); }));
     panel.append(actions);
     panel.append(el('p', { className: 'hint', textContent: 'Saved in this browser. Presets → "Copy as code" gives lines to paste into the SETTINGS block of CozyBeach.html.' }));
     panel.scrollTop = scroll;
@@ -4704,6 +5363,7 @@ try {
     f.style.transition = 'none'; f.style.opacity = '1';
     void f.offsetWidth;   // apply the dark start before fading (a timer, so it also runs while the page is hidden)
     setTimeout(() => { f.style.transition = 'opacity 1.6s ease'; f.style.opacity = '0'; }, 120);
+    setTimeout(() => { f.style.transition = 'none'; f.style.opacity = '0'; }, 3500);   // in case the fade never ran
   }
 } catch {}
 // Test hook (used for automated checks; harmless otherwise)

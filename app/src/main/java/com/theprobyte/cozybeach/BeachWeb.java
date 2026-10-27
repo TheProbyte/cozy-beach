@@ -71,7 +71,9 @@ final class BeachWeb {
 
             @Override
             public boolean shouldOverrideUrlLoading(WebView view, WebResourceRequest request) {
-                return true;   // stay on the beach: no navigating away
+                // Stay on the beach: no navigating away. Reloading our own page (a new day's scene,
+                // changed settings) is allowed; blocking it left the screen dark after the fade-out.
+                return !HOST.equals(request.getUrl().getHost());
             }
         });
         return web;
@@ -84,6 +86,10 @@ final class BeachWeb {
         web.addJavascriptInterface(new Object() {
             @android.webkit.JavascriptInterface
             public void frameRate(float fps) { listener.set(fps); }
+
+            /** Reload the page (switching scene); done natively so nothing can block it. */
+            @android.webkit.JavascriptInterface
+            public void reload() { web.post(web::reload); }
         }, "CozyApp");
     }
 
