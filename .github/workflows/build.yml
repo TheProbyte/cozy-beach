@@ -51,11 +51,21 @@ jobs:
       - name: Name the APK
         run: cp app/build/outputs/apk/debug/app-debug.apk CozyBeach.apk
 
+      # The same page packaged for Lively Wallpaper (Windows): drag the zip onto Lively.
+      - name: Lively package
+        run: |
+          mkdir -p lively_pkg
+          cp index.html lively/LivelyInfo.json app/src/main/res/drawable-nodpi/thumb.png lively_pkg/
+          (cd lively_pkg && zip -q -r ../CozyBeach-Lively.zip .)
+          ls -l CozyBeach-Lively.zip
+
       - name: Upload APK artifact
         uses: actions/upload-artifact@v7
         with:
           name: CozyBeach
-          path: CozyBeach.apk
+          path: |
+            CozyBeach.apk
+            CozyBeach-Lively.zip
           if-no-files-found: error
 
       # Rolling "latest" release so the APK is always two taps away on the phone:
@@ -66,13 +76,13 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           APK=CozyBeach.apk
-          NOTES="Built from ${GITHUB_SHA::7} ($(date -u +'%Y-%m-%d %H:%M UTC')). Download **CozyBeach.apk** below, open it on your phone, then tap **Set as wallpaper**."
+          NOTES="Built from ${GITHUB_SHA::7} ($(date -u +'%Y-%m-%d %H:%M UTC')). Phone: download **CozyBeach.apk**, open it, tap **Set as wallpaper**. Windows: drag **CozyBeach-Lively.zip** onto Lively Wallpaper."
           if gh release view latest >/dev/null 2>&1; then
-            gh release upload latest "$APK" --clobber
+            gh release upload latest "$APK" CozyBeach-Lively.zip --clobber
             gh release edit latest --title "Latest build" --notes "$NOTES" --latest
           else
             for attempt in 1 2 3; do
-              gh release create latest "$APK" --title "Latest build" --target "$GITHUB_SHA" --latest --notes "$NOTES" && break
+              gh release create latest "$APK" CozyBeach-Lively.zip --title "Latest build" --target "$GITHUB_SHA" --latest --notes "$NOTES" && break
               echo "Release create failed (attempt $attempt), retrying..."; sleep $((attempt * 10))
               [ "$attempt" = 3 ] && exit 1
             done

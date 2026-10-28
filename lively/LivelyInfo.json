@@ -1,0 +1,14 @@
+{
+  "AppVersion": "1.0.0.0",
+  "Title": "Cozy Beach",
+  "Desc": "Four little friends around a campfire. A different place each day, live weather, day and night, and the odd surprise.",
+  "Author": "TheProbyte",
+  "License": "",
+  "Contact": "https://github.com/TheProbyte/cozy-beach",
+  "Type": 1,
+  "FileName": "index.html",
+  "Arguments": null,
+  "IsAbsolutePath": false,
+  "Thumbnail": "thumb.png",
+  "Preview": "thumb.png"
+}

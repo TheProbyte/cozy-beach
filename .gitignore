@@ -4,3 +4,4 @@ local.properties
 # Filled in by the build workflow: the page (from index.html) and the 3D engine
 app/src/main/assets/index.html
 app/src/main/assets/three.module.js
+dist/

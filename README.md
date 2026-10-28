@@ -19,6 +19,16 @@ It runs a battery-saving mode: lighter graphics, 24–30 frames a second (15 on 
 
 Each push to `main` builds a new APK (see `.github/workflows/build.yml`). Installing a newer APK updates the app in place.
 
+## Windows (Lively Wallpaper)
+
+**Download:** https://github.com/TheProbyte/cozy-beach/releases/download/latest/CozyBeach-Lively.zip
+
+Drag the zip onto Lively Wallpaper (or **+** → pick the file). It needs the internet the first time it starts, to load the 3D engine.
+
+## Surprises
+
+Every few minutes something unexpected happens. What, is up to you to find out. ⚙ → Extras turns them off or changes how often they come.
+
 ## In a browser
 
 - https://theprobyte.github.io/cozy-beach/
